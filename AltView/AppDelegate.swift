@@ -1,7 +1,12 @@
 import AppKit
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var receiver: ReceiverWindowController?
+    private lazy var updates = AppUpdateController(
+        driver: SparkleUpdateDriver(isPresenting: { [weak self] in self?.receiver?.isPresenting == true }),
+        isPresenting: { [weak self] in self?.receiver?.isPresenting == true }
+    )
     private var customTextMenuItem: NSMenuItem?
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard NSClassFromString("XCTestCase") == nil,
@@ -9,7 +14,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let receiver = ReceiverWindowController()
         self.receiver = receiver
         receiver.onCustomTextSettingChange = { [weak self] in self?.updateCustomTextMenu() }
+        receiver.onPresentationActivityChange = { [weak self] in self?.updates.activityDidChange() }
+        receiver.onCheckForUpdates = { [weak self] in self?.updates.checkForUpdates(nil) }
+        updates.onChange = { [weak self] in
+            guard let self else { return }
+            self.receiver?.showUpdateState(self.updates.state, canCheck: self.updates.canCheckForUpdates,
+                                           disabledReason: self.updates.disabledReason)
+        }
         installMenus()
+        updates.start()
         receiver.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -35,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
         appMenu.addItem(withTitle: "About AltView", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let check = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(AppUpdateController.checkForUpdates(_:)), keyEquivalent: "")
+        check.target = updates
+        let automatic = appMenu.addItem(withTitle: "Automatically Check for Updates", action: #selector(AppUpdateController.toggleAutomaticChecks(_:)), keyEquivalent: "")
+        automatic.target = updates
         appMenu.addItem(.separator())
         let settings = appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ","); settings.target = self
         appMenu.addItem(.separator())

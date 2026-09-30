@@ -8,6 +8,7 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
     private let presentation: CanvasPresentation
     private var screenObserver: NSObjectProtocol?
     private var reposition: DispatchWorkItem?
+    var isActive: Bool { windowed || requestedDisplay != nil }
     var onChange: ((String) -> Void)?
 
     init(presentation: CanvasPresentation) {

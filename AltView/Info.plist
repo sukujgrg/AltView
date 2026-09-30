@@ -1,19 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-    <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
-    <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>AltView</string>
-    <key>CFBundleDisplayName</key><string>AltView</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSLocalNetworkUsageDescription</key><string>AltView discovers presentation receivers and exchanges display content with your paired apps on the local network.</string>
-    <key>NSBonjourServices</key><array><string>_altview._tcp</string></array>
-    <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Suku. All rights reserved.</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>AltView</string>
+	<key>CFBundleDisplayName</key>
+	<string>AltView</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>AltView discovers presentation receivers and exchanges display content with your paired apps on the local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_altview._tcp</string>
+	</array>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Suku. All rights reserved.</string>
+	<key>AltViewSourceCommit</key>
+	<string>$(ALTVIEW_SOURCE_COMMIT)</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/sukujgrg/AltView/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>/aOsSXjfPmzSFt0kX8/qbGCJDFSq7GEy+AEK2xcNkB0=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUShowReleaseNotes</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+</dict>
+</plist>

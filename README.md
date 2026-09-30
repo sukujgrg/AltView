@@ -2,7 +2,7 @@
 
 AltView turns a spare Mac into a clean text and lower-third output for an HDMI switcher or external display. It receives generic text snapshots, so the same receiver can later serve scripture, lyrics, captions, and other presentation apps.
 
-This is a standalone **macOS Xcode application project** with no package dependencies. ViewTheWord and eucaly are not integrated yet. Compose is a built-in custom-text presenter. It can show messages on this Mac or send them to another AltView receiver using the same encrypted connection as future integrations.
+This is a standalone **macOS Xcode application project** with Sparkle 2.9.6 for self-updates. ViewTheWord and eucaly are not integrated yet. Compose is a built-in custom-text presenter. It can show messages on this Mac or send them to another AltView receiver using the same encrypted connection as future integrations.
 
 The intended setup has **eucaly or ViewTheWord running on the presentation Mac**, with **AltView running on a different Mac connected to the output display**. Each presentation app will discover and pair directly with AltView, using the code shown on the receiving Mac. Pairing starts inside the sending app. These integrations are planned; they will not require opening Compose or running a separate AltView app on the sending Mac. Compose is an optional built-in sender for custom messages and standalone testing.
 
@@ -10,7 +10,9 @@ The intended setup has **eucaly or ViewTheWord running on the presentation Mac**
 
 Open **AltView.xcodeproj**, choose the **AltView** scheme and **My Mac**, then press **Command-R**. The application targets macOS 12 Monterey and later. Release builds include Intel (`x86_64`) and Apple Silicon (`arm64`). Build on a current development Mac; the Air only needs the resulting application.
 
-The default project uses local ad-hoc signing, with no development team required. This is a development build, not a notarized distribution. For a signed distribution, configure your own team and signing identity in Xcode before archiving; do not disable Gatekeeper globally.
+Debug builds use local ad-hoc signing, with no development team required. `make build` archives and exports a universal app into `~/Applications`; `make release` signs, notarizes and publishes using your local Keychain. Release signing uses the same Apple team as eucaly and ViewTheWord. See [releasing](docs/releasing.md) for Apple app-specific password setup, matching Make targets and recovery.
+
+AltView checks for updates with Sparkle. Use **AltView → Check for Updates…** or click **Update Available** in the workspace. Automatic checks stay quiet; installation requires a click while output and presentation are stopped. See [self-updates](docs/self-updates.md).
 
 The Output page shows an **8-character pairing code** in two groups of four, such as `ABCD-2345`, that you can read and type on the sending Mac, or copy with **Copy Code**. Codes use uppercase letters and digits, excluding confusing `0`, `1`, `I`, and `O`; lowercase input works and the hyphen is optional when typing. Pairing secrets are saved in the data-protection Keychain when the app's signing permits it. An ad-hoc build may instead explain that the code changes when AltView restarts and keep a fresh random secret in memory. In that mode, enter the receiver's new code after restarting it. No secrets are stored in preferences or Bonjour records. Both Macs need this version; previous 64-character codes are no longer accepted.
 
@@ -100,14 +102,15 @@ Network I/O, encoding, decoding, heartbeats, and retries use private queues. Tex
 ## Build and test
 
 ```sh
-xcodebuild -project AltView.xcodeproj -scheme AltView \
-  -configuration Debug -destination 'platform=macOS' \
-  -derivedDataPath build/DerivedData test
-
-xcodebuild -project AltView.xcodeproj -scheme AltView \
-  -configuration Release -destination 'generic/platform=macOS' \
-  -derivedDataPath build/ReleaseDerivedData build
+make build
+make test
+make release-check
 ```
+
+`make test-release` runs only offline release regressions. `make release-notarize`
+prepares local artifacts; `make release-publish` publishes them. `make release`
+runs both stages. `make clean` preserves saved releases. See the
+[release guide](docs/releasing.md) before the first release.
 
 The app's deployment target is macOS 12. The test bundle targets macOS 14 to match current Xcode's XCTest runtime; this does not raise the app's minimum OS. Automated coverage includes framing, Unicode limits, bounded queues, ownership, real TLS sockets, reconnection, invalid pairing, timeouts, text fitting, background/PNG pixels, image import and reload, lower-third placement, reversible motion, stable text updates, immediate ownership-loss clearing, Reduce Motion, draft/published-text separation, cancellation during connection/takeover, native view/window initialization, automatic receiver startup, local-receiver exclusion from discovery, wrong-code recovery, Connect Only privacy, one-step connection/publishing, cancellation during pairing lookup, actual draft rendering, staged font/key colour, combined local publication, external-source identity/design application, and publication cancellation.
 

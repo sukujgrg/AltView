@@ -8,6 +8,8 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     private let storePairing: (Data, String) throws -> Void
     var showReceiver: (() -> Void)?
     var showDesign: (() -> Void)?
+    var onPresentationActivityChange: (() -> Void)?
+    var isPresenting: Bool { session.status.ownsOutput || session.pending != nil || session.takingOutput }
     var onDraftChange: ((DisplayContent) -> Void)?
     var prepareLocalPublish: ((DisplayContent) -> Bool)?
     var cancelLocalPublish: (() -> Void)?
@@ -251,6 +253,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     }
     func updateLocalDisplay(_ status: String) { localDisplayStatus = status; refresh() }
     private func refresh() {
+        onPresentationActivityChange?()
         guard isViewLoaded else { return }
         let status = session.status
         let destination = remote ? (connectedName.isEmpty ? "the receiving Mac" : connectedName) : "this Mac"

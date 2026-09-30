@@ -3,6 +3,23 @@ import AppKit
 final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
     private let defaults: UserDefaults
     private(set) var customTextEnabled: Bool
+    var onPresentationActivityChange: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
+    var isPresenting: Bool {
+        output.isActive || receiverStatus.ownerID != nil || composer?.isPresenting == true
+    }
+    private lazy var updateButton: NSButton = {
+        let button = UI.button("Update Available", target: self, action: #selector(checkForUpdates))
+        button.isHidden = true
+        button.setAccessibilityIdentifier("updateAvailable")
+        return button
+    }()
+    func showUpdateState(_ state: AppUpdateState, canCheck: Bool, disabledReason: String?) {
+        updateButton.isHidden = state.availableVersion == nil
+        updateButton.isEnabled = canCheck
+        updateButton.toolTip = disabledReason ?? state.availableVersion.map { "Update to AltView \($0)" }
+    }
+    @objc private func checkForUpdates() { onCheckForUpdates?() }
     var onCustomTextSettingChange: (() -> Void)?
     private let receiverPort: UInt16
     private var stopped = false
@@ -89,10 +106,12 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         output.onChange = { [weak self] text in
             self?.outputLabel.stringValue = text
             self?.composer?.updateLocalDisplay(text)
+            self?.onPresentationActivityChange?()
         }
         composer = TextComposerViewController(defaults: defaults, localReceiverID: id) { [weak self] completion in
             self?.connectLocal(completion)
         }
+        composer.onPresentationActivityChange = { [weak self] in self?.onPresentationActivityChange?() }
         composer.showReceiver = { [weak self] in self?.showReceiverPage() }
         composer.showDesign = { [weak self] in self?.showDesignPage() }
         composer.onDraftChange = { [weak self] _ in self?.refreshDraft() }
@@ -218,7 +237,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         settingsButton.setAccessibilityIdentifier("workspaceSettings")
         settingsButton.target = self; settingsButton.action = #selector(showSettings)
         settingsButton.widthAnchor.constraint(equalToConstant: 34).isActive = true
-        let header = UI.row(icon, UI.label("AltView", size: 20, bold: true), NSView(), sectionPicker, settingsButton)
+        let header = UI.row(icon, UI.label("AltView", size: 20, bold: true), NSView(), updateButton, sectionPicker, settingsButton)
         header.setCustomSpacing(14, after: sectionPicker)
         header.heightAnchor.constraint(equalToConstant: 40).isActive = true
         let main = UI.column(header, UI.separator(), pages, spacing: 16)
@@ -229,6 +248,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private func update(_ status: ReceiverStatus) {
         guard !stopped else { return }
         receiverStatus = status
+        onPresentationActivityChange?()
         starting = false
         receiveButton.title = status.listening ? "Pause Receiving" : "Resume Receiving"
         receiveButton.isEnabled = pairingKey != nil
