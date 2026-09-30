@@ -28,13 +28,8 @@ final class ReceiverDiscovery {
             self.browser = browser
             browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
                 guard let self, let browser, self.browser === browser else { return }
-                let receivers = results.compactMap { result -> DiscoveredReceiver? in
-                    guard case .service(let name, _, _, _) = result.endpoint else { return nil }
-                    let id: UUID?
-                    if case .bonjour(let record) = result.metadata { id = record["receiverID"].flatMap(UUID.init(uuidString:)) }
-                    else { id = nil }
-                    if let id, id == self.excludingReceiverID { return nil }
-                    return DiscoveredReceiver(name: name, endpoint: result.endpoint, receiverID: id)
+                let receivers = results.compactMap {
+                    self.receiver(endpoint: $0.endpoint, metadata: $0.metadata)
                 }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 self.deliver(receivers, error: nil, generation: generation)
             }
@@ -50,6 +45,15 @@ final class ReceiverDiscovery {
             }
             browser.start(queue: self.queue)
         }
+    }
+    // Keep identity parsing and filtering independent of live Bonjour availability.
+    func receiver(endpoint: NWEndpoint, metadata: NWBrowser.Result.Metadata) -> DiscoveredReceiver? {
+        guard case .service(let name, _, _, _) = endpoint else { return nil }
+        let id: UUID?
+        if case .bonjour(let record) = metadata { id = record["receiverID"].flatMap(UUID.init(uuidString:)) }
+        else { id = nil }
+        if let id, id == excludingReceiverID { return nil }
+        return DiscoveredReceiver(name: name, endpoint: endpoint, receiverID: id)
     }
     func stop() {
         dispatchPrecondition(condition: .onQueue(.main))

@@ -85,10 +85,11 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let contentBadge = StatusBadge("NO TEXT")
     private var updatingDraft = false
 
-    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 49721) {
+    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 49721,
+         window: NSWindow? = nil) {
         self.defaults = defaults; self.receiverPort = receiverPort
         customTextEnabled = defaults.bool(forKey: "customTextEnabled")
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
+        let window = window ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "AltView"
         window.subtitle = "Presentation workspace"

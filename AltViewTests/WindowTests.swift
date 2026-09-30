@@ -2,7 +2,17 @@ import AppKit
 import XCTest
 @testable import AltView
 
+// Hosted runners can have a screen shorter than the layouts under test. Keep
+// AppKit's screen fitting out of these tests while retaining window Auto Layout.
+private final class LayoutTestWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
 final class WindowTests: XCTestCase {
+    private func layoutWindow() -> NSWindow {
+        LayoutTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+    }
     private func eventually(_ description: String, timeout: TimeInterval = 10, _ predicate: @escaping () -> Bool) {
         let done = expectation(description: description)
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
@@ -233,12 +243,15 @@ final class WindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         try defaults.set(JSONEncoder().encode(DisplayContent.scripture), forKey: "customTextDraft")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0,
+                                                  window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         let window = try XCTUnwrap(controller.window)
-        window.setContentSize(NSSize(width: 980, height: 650))
         let root = try XCTUnwrap(window.contentView)
         controller.setCustomTextEnabled(true)
+        controller.showWindow(nil)
+        root.layoutSubtreeIfNeeded()
+        window.setContentSize(NSSize(width: 980, height: 650))
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = NSAppearance(named: appearance)
             for (showPage, action) in [
@@ -281,7 +294,8 @@ final class WindowTests: XCTestCase {
         var style = OutputStyle(); style.background = "0000FF"
         try defaults.set(JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
         try defaults.set(JSONEncoder().encode(style), forKey: "outputStyle")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0,
+                                                  window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         controller.showDesignPage()
         let window = try XCTUnwrap(controller.window)
@@ -324,7 +338,8 @@ final class WindowTests: XCTestCase {
         receiver.start(name: "Layout test", key: key, advertise: false)
         defer { receiver.stop() }
         eventually("layout receiver ready") { remoteStatus.port != nil }
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0,
+                                                  window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         controller.setCustomTextEnabled(true); controller.showComposerPage()
         let window = try XCTUnwrap(controller.window)
@@ -353,6 +368,7 @@ final class WindowTests: XCTestCase {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled.fulfill() }
                 wait(for: [settled], timeout: 1)
                 root.layoutSubtreeIfNeeded()
+                XCTAssertEqual(root.bounds.height, height, accuracy: 1, "The test must exercise the requested window height")
                 let status = try XCTUnwrap(descendants(root).first { $0.accessibilityIdentifier() == "textPublicationDetail" })
                 let statusFrame = status.convert(status.bounds, to: root)
                 XCTAssertEqual(statusFrame.minY, 20, accuracy: 1, "Publishing status stays at the bottom of the window")

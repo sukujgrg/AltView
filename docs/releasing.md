@@ -134,3 +134,11 @@ when adding Swift files or changing build settings; CI checks it stays in sync.
 The release regressions use fake Apple/GitHub commands and temporary repositories.
 They exercise interrupted work, source/CI/tag mismatches, signatures, architecture
 and entitlement checks, history preservation and publication without real uploads.
+
+App layout tests use windows that can exceed the runner's display size, so compact
+and tall layouts are checked at their requested dimensions. Hosted CI explicitly
+sets `TEST_RUNNER_ALTVIEW_SKIP_BONJOUR_TEST=1` (forwarded by Xcode as
+`ALTVIEW_SKIP_BONJOUR_TEST`) to skip only the live multicast discovery test;
+receiver identity parsing/filtering and real loopback TLS tests still run.
+`make test` locally includes live Bonjour discovery by default and needs local
+network access. Two-Mac discovery remains part of the manual hardware checks.

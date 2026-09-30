@@ -5,6 +5,33 @@ import Network
 final class NetworkTests: XCTestCase {
     func testDiscoveryExcludesThisMacByIdentity() throws {
         let localID = UUID(), remoteID = UUID()
+        let discovery = ReceiverDiscovery(excludingReceiverID: localID) { _, _ in }
+        let endpoint = NWEndpoint.service(name: "Same receiver name", type: AltViewProtocol.serviceType,
+                                          domain: "local.", interface: nil)
+        XCTAssertNil(discovery.receiver(endpoint: endpoint, metadata: .bonjour(NWTXTRecord(["receiverID": localID.uuidString]))))
+        let remote = try XCTUnwrap(discovery.receiver(endpoint: endpoint,
+            metadata: .bonjour(NWTXTRecord(["receiverID": remoteID.uuidString]))))
+        XCTAssertEqual(remote.receiverID, remoteID)
+        XCTAssertEqual(remote.name, "Same receiver name", "Names must not be used to identify this Mac")
+        XCTAssertEqual(remote.endpoint, endpoint)
+        let unfiltered = ReceiverDiscovery { _, _ in }
+        XCTAssertNotNil(unfiltered.receiver(endpoint: endpoint, metadata: .bonjour(NWTXTRecord(["receiverID": localID.uuidString]))))
+    }
+    func testDiscoveryKeepsServicesWithMissingOrInvalidIdentity() throws {
+        let discovery = ReceiverDiscovery(excludingReceiverID: UUID()) { _, _ in }
+        let endpoint = NWEndpoint.service(name: "Receiver", type: AltViewProtocol.serviceType,
+                                          domain: "local.", interface: nil)
+        for metadata: NWBrowser.Result.Metadata in [.none, .bonjour(NWTXTRecord()), .bonjour(NWTXTRecord(["receiverID": "invalid"]))] {
+            let receiver = try XCTUnwrap(discovery.receiver(endpoint: endpoint, metadata: metadata))
+            XCTAssertNil(receiver.receiverID)
+            XCTAssertEqual(receiver.endpoint, endpoint)
+        }
+        XCTAssertNil(discovery.receiver(endpoint: .hostPort(host: "127.0.0.1", port: 49721), metadata: .none))
+    }
+    func testBonjourDiscoveryExcludesThisMacByIdentity() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["ALTVIEW_SKIP_BONJOUR_TEST"] == "1",
+                      "Live Bonjour needs local multicast discovery; identity filtering is tested separately.")
+        let localID = UUID(), remoteID = UUID()
         let key = try PairingKey.generate()
         let local = ReceiverServer(receiverID: localID) { _ in }
         let remote = ReceiverServer(receiverID: remoteID) { _ in }
