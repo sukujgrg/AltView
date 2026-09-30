@@ -1,0 +1,132 @@
+# Standalone validation
+
+This checklist intentionally uses only AltView. ViewTheWord and eucaly integrations are a separate step.
+
+## Status and destination revision — 30 September 2026
+
+- Text now scopes all state to its selected destination; this Mac’s receiver status appears only on Output. Fixed DRAFT badges are replaced by an actual unpublished-change indicator, and Design explicitly applies to this Mac.
+- Send to stays visible outside the editor scroll area. The body editor grows with the window; the entire last-sent remote message is readable. Empty sent title/footer rows collapse. Hide offers Show Last Text without publishing newer edits.
+- Automated validation: all **26 window tests** and **10 text-session tests** passed in `build/UXClarity-Verified.xcresult`. These include compact light/dark layouts, destination changes, private edits, Design scoping, remote messages longer than twelve lines, offline state, local connection errors, and safe restoration of the last publication.
+- Full suite: **85 of 86 tests passed**. `NetworkTests.testInitialRetriesStopAtTheOverallDeadline` failed because the test receiver accepted one connection while the assertion expected multiple attempts. Networking implementation files are unchanged in this revision; the retry-test failure remains unresolved.
+- Native visual inspection is pending. Automatic approval review blocked launching the isolated, locally built app used for sample-data inspection and requested explicit user approval. No claim of a completed visual pass is made.
+- Review findings and resulting page responsibilities are in [UX review](ux-review.md). Physical two-Mac, Intel/Monterey, HDMI/ATEM and VoiceOver validation remain separate hardware checks.
+
+## Optional Custom Text
+
+- With fresh preferences, launch into Output with only Output and Design in navigation. Receiving and the pairing code remain available. A saved text draft from an older version must not reveal Text automatically.
+- Open Design before enabling Custom Text: sample previews and the current external source are available, with no Compose draft choice or Edit Text button. Choosing samples must not publish them.
+- Click the gear beside the page tabs: Settings opens with a Custom Text switch. Turn it on: Text appears while the current page, live source and receiving state stay unchanged. No connection or output window opens. Open Text to see the saved private draft.
+- Turn Custom Text off again while it is presenting: its session stops, Text disappears, and Output opens. Re-enable it: the draft remains private until explicitly published. Turning it off must leave an external app’s live source untouched.
+- Verify File contains only Close Window; View contains Show Output and Show Design, plus Show Text only while enabled. AltView → Settings… and Command-comma open the same gear popover. Close Output belongs in Window.
+- Restart: Output still opens first, Text remains available, and the saved text stays private until explicitly published. Command-2/3 still open Design/Output.
+- At 980 × 650 in light and dark appearances, reveal Text and switch between pages. Navigation, preview and publishing actions must remain visible without enlarging the window.
+
+Gear settings revision, 30 September 2026: all 24 window tests passed in `build/WorkspaceSettingsWindows-Final.xcresult` after fixing compact preview sizing. The other 59 tests passed in `build/WorkspaceSettingsTests.xcresult`. Coverage includes the real Settings popover, remembered on/off state, stopping a live Custom Text session, private draft restoration, preserving another app’s ownership, and publication after re-enabling. Native inspection confirmed the gear popover, switch in both directions, return from Text to Output when disabled, File containing window-closing commands, and View containing Show Output/Show Design plus Show Text only when enabled. The universal release and signature were verified; the preceding package is preserved in `build/before-workspace-settings/`.
+
+Earlier opt-in implementation, 30 September 2026: all 82 tests passed (`build/CustomTextOptInTests-Final.xcresult`), including opt-in persistence, saved-draft privacy, sample previews, external-source ownership, and compact layouts. An isolated native app copy confirmed the initial two-page navigation, visible receiver pairing, Enable Custom Text action, private Text page, and updated Show Custom Text menu. Its receiver port was occupied by another AltView instance; encrypted networking was verified by the automated tests on ephemeral ports. The universal release and local code signature passed verification. Updated `build/AltView.app`, ZIP, and SHA-256; the preceding package is preserved in `build/before-custom-text-opt-in/`.
+
+## Receiver-first UX validation — 30 September 2026
+
+- Full suite: 47 tests passed, including real encrypted sockets and Bonjour discovery (`build/ReceiverUXTests-Verified.xcresult`). The final five window/connection regressions passed again after layout and manual-entry fixes (`build/ReceiverUXWindows-Complete.xcresult`), without constraint warnings.
+- Native app: verified Receiver is first, starts automatically, shows a readable receiver name and pairing instructions, excludes this Mac from Another Mac, provides optional manual addressing, dismisses pairing with Escape, and updates instructions when paused/resumed. The packaged app was reopened and left on Ready to receive with no active sender.
+- Release: both x86_64 and arm64 slices have minimum macOS 12.0; code signature verification passed. Updated `build/AltView.app`, `build/AltView.zip`, and the SHA-256 file. Previous sources and package are preserved in `build/before-receiver-ux/`.
+- Physical two-Mac, Intel Air/Monterey, HDMI/ATEM, developer-signed Keychain persistence, and VoiceOver checks remain outstanding. See [UX review](ux-review.md) for findings and the revised flow.
+
+## One Mac — current Text / Design / Output workflow
+
+- Launch: Output opens, Ready to receive appears, no saved text is published, and no output window opens. Pause receiving, change pages, and confirm it stays paused; resume without restarting.
+- Text: inspect the saved draft rendered with its design. Edit Title/Body/Footer and verify the draft preview updates while Output keeps the last published snapshot.
+- Design: stage font, size, key colour, lower-third enablement and placement. Check the same draft in Text. Apply Design to Output updates appearance only; Publish Text & Design publishes local text and design together.
+- Untick Title/Footer beside their Layout rows. Their text remains saved; Text explains hidden regions. Re-enable and verify saved geometry and automatic Body expansion.
+- While an external sender owns output, Design previews its text and identifies its source. Open Compose Draft must leave that source untouched. Apply Design keeps the external owner and content; publishing Compose deliberately takes over.
+- Stop Presenting during connection/takeover. No late text or draft design may appear. Hide during publication must not leave Design locked. Subsequent text edits during connection stay private.
+- Invalid geometry or a required missing PNG blocks local publishing with an explanation. Revert restores all design properties and applied artwork. Closing/quitting from any page protects the draft.
+- Output: select Preview Window or the intended external display and Open Output. Only the live composition should appear. Drafts and samples never go to that window.
+- Another Mac: discovery excludes this receiver, optional manual host/port works, wrong-code retry stays in the sheet, Return/Escape work, Connect Only preserves privacy, and Connect & Publish Text sends only text. Local Design changes remain local.
+- Inspect minimum window size, multilingual text, keyboard navigation and VoiceOver on the intended machine.
+
+## Lower-third UX validation — 30 September 2026
+
+- Full suite: **54 tests passed**, including seven new regressions for private design drafts, receiver refreshes, external enable changes, validation, missing-PNG recovery, import apply/revert/cancellation, and action visibility at minimum size. Result: `build/LowerThirdUXTests-Final.xcresult`.
+- Native inspection: verified the 900 × 800 content layout, explicit Apply/Revert state, named layout guides, invalid number feedback, reverting to the applied artwork rectangle, and the Keep Editing / Discard / Apply close sheet. No constraint warnings appeared in the test run.
+- Packaged app: verified guide labels and Command-S while a numeric field is still active. The original design was restored after the checks; sample text was not published. The editor was left open without unapplied changes.
+- Release: rebuilt `build/AltView.app` and `build/AltView.zip`; x86_64 and arm64 both declare macOS 12.0 minimum, and strict code-signature verification passed. Previous sources/package are in `build/before-lower-third-ux/`.
+
+## Optional title and footer — 30 September 2026
+
+- Full suite: **59 tests passed** (`build/OptionalTextTests.xcresult`). Added coverage verifies old-design decoding, visibility persistence, pixels for all four switch combinations, accessibility matching visible text, source-content preservation, guide/motion bounds, and Apply/Revert with disabled fields.
+- In Edit Design → Layout, untick Title and Footer. Only body text and its expanded guide should remain alongside the artwork. Title/footer fields disable without losing their values. Body Y/Height show calculated values; X/Width remain editable. Apply, restart, and verify both choices persist; re-enable both rows to restore sender text and the saved base body box. Normal text mode should still show all supplied fields.
+- Automatic body expansion: **33 rendering, lower-third and window tests passed** (`build/BodyExpansionTests.xcresult`). Default layout: title off → Y 74%, height 16%; footer off → Y 79%, height 15%; both off → Y 74%, height 20%; both on → original Y 79%, height 11%. Tests also cover custom positions, matching guide/render bounds, saved-design round trips, checkbox placement, Apply/Revert and recovery from invalid fields that become automatic.
+
+## Lower-third artwork and motion
+
+- Open Design. Change layout, alignment, enable state, and PNG artwork while text is live: output must keep the applied design until Apply Design to Output (Command-S). Revert Changes restores the applied design. Check all three close-sheet choices.
+- Use lower third is staged with all other appearance changes. Toggling it must leave Output unchanged until Apply Design or local Publish.
+- Try Slide, Reveal and None, apply each, and test rapid Hide / Show reversal. Release, owner disconnect, Pause Receiving and Clear & Release must clear immediately. Text updates must keep the banner in place.
+- Preview Animation, Show layout guides, and the three sample-text choices must affect only the editor. Receiver preview and Preview Output must move together. macOS Reduce Motion makes transitions immediate.
+- Import a transparent PNG through Choose PNG. Inspect orientation and transparency over green, blue, black and a custom colour. Fit to Canvas suits a full-frame composition; Fit to Banner suits a cropped strip. Both affect artwork only. Check semitransparent edges on the ATEM.
+- Edit the artwork/title/body/footer rectangles. Test an empty field, letters, non-finite values, and out-of-range numbers. Invalid input stays visible and blocks Apply; clamping is explained. None animation must not remain blocked by an invalid disabled duration. Revert clears invalid input.
+- Select Long message and reduce the Body box: check the small-text warning. Validate layout, scrolling, keyboard navigation and guides on the Air’s 1440 × 900 display. Apply/Revert must remain visible when the window is shorter. Draft font and size are used in the preview.
+- Import a replacement, then Revert or discard it before import finishes: the applied PNG must remain available. After applying an import, move the original PNG, quit and reopen: the copied artwork and placement must return. Switch to Built-in and back without losing the saved PNG. Invalid/oversized/animated PNGs must preserve the previous design.
+- If saved artwork is missing, the selected custom output remains blank with a recovery message. Edit Design must allow importing a replacement or applying Built-in banner.
+- In Design → Layout, untick Artwork for both the built-in banner and an imported PNG. The draft shows only text on the key colour, without changing text positions; the artwork guide, coordinates and fit controls turn off. Apply and restart to verify the choice persists, then tick Artwork to restore the image and placement. With a missing saved PNG, hiding Artwork must allow Apply and Publish Text & Design, and live text must remain visible. Re-enabling the missing PNG must block Apply until it is replaced or Built-in banner is chosen. Revert must restore the applied visibility choice.
+- Disable Lower Third: the original text-only positions and height return. General image/PDF projection and video loops remain deferred.
+
+## Two Macs and the Air
+
+- Run the universal app on the 2017 Intel Air with macOS 12 Monterey. Confirm the app launches before attaching HDMI.
+- Confirm Output visibly shows eight characters, with no `0`, `1`, `I`, or `O`. Type the displayed code on the main Mac (also try lowercase), and choose Connect & Publish Text. Copy Code must match the visible code. Repeat using a manual host/port. If the app says the code changes when AltView restarts, enter the new code after each receiver restart.
+- Reset Code: existing connections and output must clear, the visible code must update, and an active receiver must resume automatically. A paused receiver must stay paused. Only the new code may connect. Both Macs must use this version; old 64-character codes are rejected.
+- Wrong pairing code must not connect. An explicitly re-paired receiver is accepted; a changed receiver identity must not silently replace a previously pinned receiver.
+- Turn the sender's network off while it owns output. The receiver should clear in about five seconds. Controls on both Macs remain responsive.
+- Reconnect: current state restores only when output is unowned. Repeat while the other sender is live; it must remain in control.
+- Test sleep/wake, app quit, receiver restart, reconnect and repeated take/release. Sleep suspends normal timer execution, so check the wake transition.
+
+## HDMI and ATEM Mini
+
+- Use Mini DisplayPort-to-HDMI from the 2017 Air. Extend the desktop; choose a 1920 × 1080 mode compatible with the ATEM setup. Keep receiver controls on the Air's built-in display.
+- Select the HDMI display in AltView, Open Output, and inspect ATEM preview before putting the key on air.
+- Check white-on-black with luma key and green/blue with the upstream chroma key. Tune clip/gain or chroma controls for crisp antialiased text. Confirm the clear/blank background keys out completely.
+- For downstream lower thirds, place content in AltView. Confirm placement in ATEM preview; a DSK mask does not move the incoming picture.
+- Disconnect/reconnect HDMI repeatedly. The output must not move onto the control display. Restoring the same display resumes output; Close Output cancels that restoration.
+- Move the pointer away from the HDMI display; confirm no cursor, menus, notifications, or macOS overlays enter the program. The app cannot suppress every system overlay.
+- Keep the Air awake and powered during a service. Test a realistic service-length run on the intended network and adapter.
+
+## Automated verification
+
+Latest local check — 30 September 2026: all 65 tests passed in `build/WorkspaceUXTests-Final.xcresult`. Four new integration/window tests cover actual draft rendering, staged appearance, combined local publishing, external-source preview and ownership, deterministic cancellation, invalid-design blocking, Revert and the embedded Design scroll area.
+
+Native checks covered Text/Design/Output navigation, the actual saved draft, draft colour changes with unchanged live output, Footer visibility notes, scrolling Layout controls, Revert and Keep Editing from the close sheet. An isolated native fixture with fresh preferences and an ephemeral receiver also verified the external-source banner, read-only source preview, Open Compose Draft navigation, deliberate Compose takeover and the resulting live composition. Only synthetic fixture text was published; user text was not. The fixture was closed after verification. At initial inspection the packaged app had Title and Footer off and no unapplied design changes (different from the earlier handoff observation). The saved text and applied design were preserved. The updated universal package is `build/AltView.app`, with ZIP and SHA-256 alongside; prior sources/package are in `build/before-workspace-ux/`.
+
+Run the Xcode test action as documented in the README. Tests use ephemeral ports and fresh in-memory pairing keys, and do not read the user's pairing secrets. They cover real encrypted loopback communication as well as deterministic framing, ownership, mailbox, renderer and window regressions.
+
+Intel binary generation and a macOS 12 deployment target establish build compatibility, not an actual Monterey/ATEM hardware pass. Physical Air, HDMI, network-loss, colour-key and VoiceOver checks require the intended equipment.
+
+## Local run record — 29 September 2026
+
+- Xcode 27.0: 34 XCTest tests passed from the final standalone project directory, including 12 lower-third regressions added to the original 22 tests. Result bundle: `build/LowerThirdTests-Complete.xcresult`.
+- Release build: verified both x86_64 and arm64 slices, each with minimum macOS 12.0; local ad-hoc code signature verified.
+- Native UI: opened the receiver and test sender, discovered the receiver using Bonjour, connected both test clients, published A, transferred to B, blanked B, and observed the final snapshot after the 1,000-update burst. The receiver preview and opening the test-output window were inspected.
+- Lower-third native UI: built-in banner, live text update, Blank / Show, separate Preview Output, immediate Clear & Release, Slide/Reveal selection, animated sample preview, text-box editing and reset, PNG import through the native picker, invalid-import recovery, and saved PNG reload after moving its original were checked. Custom artwork orientation, transparency and partial-alpha compositing were visually inspected. New output views expose existing text to accessibility immediately.
+- The final local package is `build/AltView.app` with `build/AltView.zip` and its SHA-256 file. Prior sources and package are preserved under `build/before-lower-third-*`. No baseline conflicts were found. The release was launched locally; the editor was left on the built-in banner with default placement and 0.45-second Slide.
+- Temporary pairing was verified on the local ad-hoc build; persistence with a developer-signed build remains a separate check.
+- Pending: running on the physical Intel Air/Monterey, a second-Mac network session, HDMI/ATEM keying and disconnects, VoiceOver, and a long live-use run.
+
+## Custom-text UX validation — 29 September 2026
+
+The former Test Sender window was replaced by Write Text inside the main control window. Native checks covered automatic local connection, private edits, Hide/Show, Stop Presenting preserving the draft, switching pages while live, Bonjour discovery in the optional remote connection sheet, validation and cancellation. The previous lower-third build and source files are retained under `build/before-compose-*`. The universal package is rebuilt for both Intel and Apple Silicon with macOS 12 minimum deployment.
+
+## Visible pairing code validation — 29 September 2026
+
+- All 43 XCTest tests passed, including eight-character generation and validation, lowercase and formatted input, rejection of old codes, encrypted loopback pairing/reconnection, and rejection of a one-character typo. Result bundle: `build/PairingCodeTests-Full.xcresult`.
+- The rebuilt release was opened on Receiver. The large eight-character code and adjacent Copy button are visible, and the output and appearance controls still fit in the window. Temporary pairing is reported for this ad-hoc build.
+- `build/AltView.app` and `build/AltView.zip` were rebuilt with both x86_64 and arm64 slices; the local code signature was verified and `build/AltView.zip.sha256` updated. Both Macs must use this version and pair with the new code.
+- Keychain persistence with developer signing and typing the code across two physical Macs remain hardware/manual checks.
+
+## Pairing input layout — 29 September 2026
+
+- Reproduced secure-entry dots overlapping the pairing-code placeholder in the connection sheet. The field now has a separate visible label and helper text, a fixed 30-point height, and a monospaced font, with no in-field placeholder.
+- Verified typing, pasting eight characters, moving focus away, and clearing the field in an isolated native preview app; no text overlaps. The user's existing app session was preserved during this check.
+- Debug and universal Release builds succeeded. The rebuilt `build/AltView.app` and `build/AltView.zip` include the fix. No protocol or pairing-validation changes were made.
+
+- Final verification: all 42 XCTest tests passed in `build/ComposerTests-Final.xcresult`. Both x86_64 and arm64 Release slices target macOS 12.0; the local code signature and ZIP integrity verified. Draft restoration after restart and the final Receiver page layout were checked natively.

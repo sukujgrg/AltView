@@ -1,0 +1,16 @@
+AltView app icon
+
+Created with the built-in imagegen tool. The master PNG preserves the generated transparency. The app uses resized PNGs in AltView/Assets.xcassets/AppIcon.appiconset.
+
+Concept: overlapping external displays with a lower-third caption bar, using the navy and gold of the app's built-in banner.
+
+Final generation prompt
+
+Use case: logo-brand
+Asset type: production macOS app icon for AltView, a native app that sends text captions and lower-third graphics to an external display.
+Primary request: create one beautifully resolved, memorable app icon. A deep navy rounded-square tile containing two slightly offset widescreen display frames and a single warm gold lower-third caption bar crossing the lower portion of the front screen. The two screens communicate alternate/external display output; the gold caption bar communicates text presentation. Treat the motif as one bold sculpted symbol.
+Style/medium: refined macOS icon, restrained dimensional depth, softly chamfered forms, satin finish, precise silhouette, quiet premium broadcast-tool feel. Front facing, no perspective tilt. Subtle upper-left lighting. The rear frame is muted steel blue, the front frame is pale ivory with a dark navy interior, the lower-third banner is rich warm gold and contains just two short dark horizontal marks suggesting text. Large chunky forms and clean negative space, readable at 32 pixels.
+Color palette grounded in the app's existing built-in banner: midnight navy #0A1429, slate blue #1A3863, warm gold #FFA62E, warm off-white.
+Composition/framing: square 1024 by 1024 image, one centered rounded-square tile occupying approximately 88 percent of the canvas width and height, generous rounded corners, transparent exterior around the tile. The symbol occupies most of the tile without touching its edges. Optical balance. Faint close contact shadow only.
+Constraints: actual alpha transparency outside the rounded tile, not a checkerboard drawing; no words, letters, app name, watermark, badges, arrows, play triangle, extra pictograms, cables, monitor stand, desktop screenshot, multiple alternatives, mockup sheet, photographic backdrop, or decorative particles. Deliver the isolated finished icon only.
+
