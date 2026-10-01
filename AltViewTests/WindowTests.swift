@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import XCTest
 @testable import AltView
 
@@ -29,18 +30,24 @@ final class WindowTests: XCTestCase {
     private func field(_ label: String, in view: NSView) throws -> NSTextField {
         try XCTUnwrap(descendants(view).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == label })
     }
-    private func settingsSwitch(in controller: ReceiverWindowController) throws -> NSSwitch {
+    private func visibleSettingsContent() -> NSView? {
+        NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap(descendants)
+            .first { $0.accessibilityIdentifier() == "workspaceSettingsContent" }
+    }
+    private func settingsContent(in controller: ReceiverWindowController) throws -> NSView {
         let root = try XCTUnwrap(controller.window?.contentView)
         let gear = try XCTUnwrap(descendants(root).compactMap { $0 as? NSButton }.first {
             $0.accessibilityIdentifier() == "workspaceSettings"
         })
         gear.performClick(nil)
-        func visibleSwitch() -> NSSwitch? {
-            NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap(descendants)
-                .compactMap { $0 as? NSSwitch }.first { $0.accessibilityIdentifier() == "enableCustomText" }
-        }
-        eventually("gear opens Settings") { visibleSwitch() != nil }
-        return try XCTUnwrap(visibleSwitch())
+        eventually("gear opens Settings") { self.visibleSettingsContent() != nil }
+        return try XCTUnwrap(visibleSettingsContent())
+    }
+    private func settingsSwitch(in controller: ReceiverWindowController) throws -> NSSwitch {
+        let settings = try settingsContent(in: controller)
+        return try XCTUnwrap(descendants(settings).compactMap { $0 as? NSSwitch }.first {
+            $0.accessibilityIdentifier() == "enableCustomText"
+        })
     }
     func testComposerEmptyRowPreferencePreviewsPublishesAndPersists() throws {
         let domain = "AltViewTests.EmptyRows.\(UUID())"
@@ -112,12 +119,38 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(navigation.selectedSegment, 0)
         eventually("ready without a click") { controller.receiverStatus.listening }
         XCTAssertNil(controller.receiverStatus.ownerName)
-        try button("Pause Receiving", in: root).performClick(nil)
+        XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Ready to receive" })
+        let pair = try button("Pair a sender…", in: root)
+        XCTAssertFalse(pair.isHidden)
+        controller.showWindow(nil)
+        pair.performClick(nil)
+        eventually("pair shortcut opens Settings") { self.visibleSettingsContent() != nil }
+        let settings = try XCTUnwrap(visibleSettingsContent())
+        settings.layoutSubtreeIfNeeded()
+        let code = try field("Pairing code", in: settings)
+        XCTAssertEqual(code.stringValue, PairingKey.text(try XCTUnwrap(controller.pairingKey)))
+        let controls: [NSView] = [code, try button("Copy Code", in: settings), try button("Reset Code…", in: settings),
+                                  try button("Pause Receiving", in: settings)]
+        for control in controls {
+            XCTAssertTrue(settings.bounds.contains(control.convert(control.bounds, to: settings)))
+        }
+        try button("Pause Receiving", in: settings).performClick(nil)
         eventually("paused") { !controller.receiverStatus.listening }
+        let name = try field("Receiver name", in: settings)
+        XCTAssertTrue(name.isEditable)
+        name.stringValue = "Presentation Mac"
+        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
+        controller.showSettings()
+        wait(for: [closed], timeout: 3)
         controller.setCustomTextEnabled(true); controller.showComposerPage(); controller.showReceiverPage()
         XCTAssertFalse(controller.receiverStatus.listening)
-        try button("Resume Receiving", in: root).performClick(nil)
+        let reopenedSettings = try settingsContent(in: controller)
+        try button("Resume Receiving", in: reopenedSettings).performClick(nil)
         eventually("resumed") { controller.receiverStatus.listening }
+        XCTAssertFalse(name.isEditable)
+        XCTAssertEqual(defaults.string(forKey: "receiverName"), "Presentation Mac")
+        XCTAssertEqual(code.stringValue, PairingKey.text(try XCTUnwrap(controller.pairingKey)))
     }
     func testCustomTextOptInPreservesDraftAndRestoresWithoutPublishing() throws {
         let domain = "AltViewTests.CustomTextOptIn.\(UUID())"
@@ -133,7 +166,7 @@ final class WindowTests: XCTestCase {
         eventually("receiver ready with Custom Text disabled") { controller.receiverStatus.listening }
         XCTAssertFalse(controller.customTextEnabled, "An existing saved draft must not opt the user in")
         XCTAssertEqual(navigation.segmentCount, 2)
-        XCTAssertFalse(try field("Pairing code", in: root).stringValue.isEmpty)
+        XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.allSatisfy { $0.accessibilityLabel() != "Text title" })
 
         controller.showDesignPage()
@@ -187,6 +220,97 @@ final class WindowTests: XCTestCase {
         reopened.showComposerPage()
         XCTAssertEqual(try XCTUnwrap(descendants(reopenedRoot).compactMap { $0 as? OutputCanvas }.first).content, draft)
     }
+    func testConnectedSenderIsNamedAndOutputControlsStayCompact() throws {
+        let domain = "AltViewTests.PairingStatus.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0, window: layoutWindow())
+        defer { controller.shutdown(); controller.close() }
+        controller.showWindow(nil)
+        let window = try XCTUnwrap(controller.window)
+        let root = try XCTUnwrap(window.contentView)
+        func label(_ id: String, in view: NSView) throws -> NSTextField {
+            try XCTUnwrap(descendants(view).compactMap { $0 as? NSTextField }.first { $0.accessibilityIdentifier() == id })
+        }
+        let status = try label("receiverListeningStatus", in: root)
+        let connection = try label("receiverConnectionStatus", in: root)
+        let pair = try button("Pair a sender…", in: root)
+        let display = try XCTUnwrap(descendants(root).first { $0.accessibilityLabel() == "Output display" && $0 is NSBox })
+        func checkLayout() {
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                window.appearance = NSAppearance(named: appearance)
+                for size in [NSSize(width: 980, height: 650), NSSize(width: 1280, height: 900)] {
+                    window.setContentSize(size)
+                    root.layoutSubtreeIfNeeded()
+                    let statusFrame = status.convert(status.bounds, to: root)
+                    let connectionFrame = connection.convert(connection.bounds, to: root)
+                    let pairFrame = pair.convert(pair.bounds, to: root)
+                    let displayFrame = display.convert(display.bounds, to: root)
+                    XCTAssertLessThanOrEqual(statusFrame.minY - connectionFrame.maxY, 12)
+                    XCTAssertLessThanOrEqual(connectionFrame.minY - pairFrame.maxY, 12)
+                    XCTAssertGreaterThanOrEqual(pairFrame.minY - displayFrame.maxY, 0)
+                    XCTAssertLessThanOrEqual(pairFrame.minY - displayFrame.maxY, 24, "Pairing must not leave a growing gap above display controls")
+                    XCTAssertTrue(root.bounds.contains(displayFrame))
+                }
+            }
+        }
+        func attachLayout(_ view: NSView, name: String) throws {
+            view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            attachment.name = name; attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        eventually("receiver ready") { controller.receiverStatus.port != nil }
+        XCTAssertEqual(connection.stringValue, "No sender connected")
+        checkLayout()
+        pair.performClick(nil)
+        eventually("pair shortcut opens settings") { self.visibleSettingsContent() != nil }
+        let settings = try XCTUnwrap(visibleSettingsContent())
+        let pairingStatus = try label("receiverPairingStatus", in: settings)
+        XCTAssertEqual(pairingStatus.stringValue, "No sender connected")
+
+        var senderStatus = SenderStatus()
+        let sender = SenderClient(name: "Presentation Mac") { senderStatus = $0 }
+        defer { sender.disconnect() }
+        let endpoint = Network.NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!)
+        sender.connect(to: endpoint, key: key)
+        eventually("paired without publishing") { senderStatus.connected && controller.receiverStatus.connections == 1 }
+        XCTAssertEqual(status.stringValue, "Sender connected")
+        XCTAssertEqual(connection.stringValue, "Connected to Presentation Mac")
+        XCTAssertEqual(pairingStatus.stringValue, connection.stringValue, "The open pairing popover confirms a successful connection")
+        XCTAssertEqual(pair.title, "Pair another sender…")
+        XCTAssertFalse(pair.isHidden)
+        XCTAssertNil(controller.receiverStatus.ownerID)
+        try attachLayout(settings, name: "Connected sender in Settings")
+        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
+        controller.showSettings(); wait(for: [closed], timeout: 3)
+        checkLayout()
+        try attachLayout(root, name: "Connected sender on Output")
+
+        let second = SenderClient(name: "Second Mac") { _ in }
+        defer { second.disconnect() }
+        second.connect(to: endpoint, key: key)
+        eventually("both paired senders identified") { controller.receiverStatus.connections == 2 }
+        XCTAssertEqual(connection.stringValue, "Connected to Presentation Mac, Second Mac")
+        sender.submit(.scripture); sender.takeOutput()
+        eventually("receiving text") { controller.receiverStatus.content == .scripture }
+        XCTAssertEqual(status.stringValue, "Receiving text")
+        checkLayout()
+        sender.releaseOutput()
+        eventually("paired sender remains after release") { controller.receiverStatus.ownerID == nil }
+        XCTAssertEqual(status.stringValue, "Sender connected")
+        second.disconnect(); sender.disconnect()
+        eventually("senders disconnected") { controller.receiverStatus.connections == 0 }
+        XCTAssertTrue(controller.receiverStatus.connectedSenders.isEmpty)
+        XCTAssertEqual(status.stringValue, "Ready to receive")
+        XCTAssertEqual(connection.stringValue, "No sender connected")
+        XCTAssertEqual(pair.title, "Pair a sender…")
+        checkLayout()
+    }
     func testTurningOffCustomTextStopsSendingAndKeepsDraftPrivateOnReenable() throws {
         let domain = "AltViewTests.DisableCustomText.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
@@ -197,8 +321,13 @@ final class WindowTests: XCTestCase {
         defer { controller.shutdown(); controller.close() }
         controller.setCustomTextEnabled(true); controller.showComposerPage()
         let root = try XCTUnwrap(controller.window?.contentView)
+        controller.showReceiverPage()
+        let pair = try button("Pair a sender…", in: root)
+        controller.showComposerPage()
         try button("Publish Text & Design", in: root).performClick(nil)
         eventually("custom text owns output") { controller.receiverStatus.ownerID != nil }
+        XCTAssertFalse(pair.isHidden)
+        XCTAssertEqual(pair.title, "Pair another sender…")
         let title = try field("Text title", in: root)
         title.stringValue = "Next private title"
         title.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: title))
@@ -211,6 +340,8 @@ final class WindowTests: XCTestCase {
             controller.receiverStatus.ownerID == nil && controller.receiverStatus.connections == 0
         }
         XCTAssertTrue(controller.receiverStatus.listening)
+        XCTAssertFalse(pair.isHidden)
+        XCTAssertEqual(pair.title, "Pair a sender…")
         XCTAssertEqual(controller.receiverStatus.content, .empty)
         let navigation = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSegmentedControl }.first)
         XCTAssertEqual(navigation.segmentCount, 2)

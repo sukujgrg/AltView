@@ -5,6 +5,7 @@ struct ReceiverStatus: Equatable {
     var listening = false
     var port: UInt16?
     var connections = 0
+    var connectedSenders: [SenderIdentity] = []
     var ownerID: UUID?
     var ownerName: String?
     var content = DisplayContent.empty
@@ -156,6 +157,9 @@ final class ReceiverServer {
     }
     private func publish() {
         status.connections = state.senders.count
+        status.connectedSenders = state.senders.values.sorted {
+            $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name < $1.name
+        }
         status.ownerID = state.owner?.id
         status.ownerName = state.owner?.name
         status.content = state.content

@@ -40,6 +40,8 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var templateEditor: LowerThirdWindowController?
     private let nameField = NSTextField(string: "")
     private let statusLabel = UI.label("Preparing receiver…", size: 16, bold: true)
+    private let connectionLabel = UI.label("No sender connected", size: 12, color: .secondaryLabelColor)
+    private let pairingStatusLabel = UI.label("No sender connected", size: 12, color: .secondaryLabelColor)
     private let ownerLabel = UI.label("No sender controls the output", size: 14, bold: true)
     private let networkLabel = UI.label("Receiving starts automatically when AltView opens.", size: 11, color: .secondaryLabelColor)
     private let pairingLabel = UI.label("Pairing uses an encrypted connection. Share the code with your sender once.", size: 11, color: .secondaryLabelColor)
@@ -56,6 +58,13 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var screenObserver: NSObjectProtocol?
     private let sectionPicker = NSSegmentedControl(labels: ["Output", "Design"], trackingMode: .selectOne, target: nil, action: nil)
     private let settingsButton = NSButton()
+    private lazy var pairSenderButton: NSButton = {
+        let button = UI.button("Pair a sender…", target: self, action: #selector(showSettings))
+        button.bezelStyle = .inline
+        button.font = .systemFont(ofSize: 12)
+        button.setAccessibilityIdentifier("pairSender")
+        return button
+    }()
     private lazy var customTextSwitch: NSSwitch = {
         let control = NSSwitch()
         control.target = self; control.action = #selector(customTextSettingChanged)
@@ -65,13 +74,23 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }()
     private lazy var settingsPopover: NSPopover = {
         let controller = NSViewController()
-        controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 196))
-        let content = UI.column(
-            UI.label("Settings", size: 17, bold: true),
+        controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 460))
+        controller.view.setAccessibilityIdentifier("workspaceSettingsContent")
+        let receiver = UI.column(
+            UI.label("Receive on this Mac", size: 13, bold: true),
+            pairingStatusLabel,
+            UI.column(UI.label("Receiver name", size: 11, color: .secondaryLabelColor), nameField, spacing: 4),
+            UI.row(pairingCodeField, copyButton, NSView()),
+            pairingInstructions, pairingLabel,
+            UI.row(receiveButton, resetButton, NSView()), spacing: 10)
+        let customText = UI.column(
             UI.row(UI.label("Custom Text", size: 13, bold: true), NSView(), customTextSwitch),
             UI.label("Compose messages on this Mac or send them to another AltView.", size: 12, color: .secondaryLabelColor),
-            UI.label("Turning this off stops Custom Text. Your draft is kept.", size: 11, color: .secondaryLabelColor),
-            NSView(), spacing: 12)
+            UI.label("Turning this off stops Custom Text. Your draft is kept.", size: 11, color: .secondaryLabelColor), spacing: 8)
+        let content = UI.column(
+            UI.label("Settings", size: 17, bold: true),
+            receiver, UI.separator(), customText, NSView(), spacing: 16)
+        content.distribution = .fill
         UI.fill(content, in: controller.view, padding: 20)
         let popover = NSPopover()
         popover.behavior = .transient
@@ -170,10 +189,19 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         resetButton = UI.button("Reset Code…", target: self, action: #selector(resetPairing))
         resetButton.isEnabled = false
         statusLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        statusLabel.setAccessibilityIdentifier("receiverListeningStatus")
+        connectionLabel.setAccessibilityIdentifier("receiverConnectionStatus")
+        connectionLabel.maximumNumberOfLines = 1
+        connectionLabel.lineBreakMode = .byTruncatingTail
+        pairingStatusLabel.setAccessibilityIdentifier("receiverPairingStatus")
+        pairingStatusLabel.maximumNumberOfLines = 2
+        pairingStatusLabel.lineBreakMode = .byTruncatingTail
         pairingInstructions.font = .systemFont(ofSize: 12)
-        let receiverCard = UI.card("Receive on this Mac", content: UI.column(
-            statusLabel, nameField, UI.separator(), UI.row(pairingCodeField, copyButton, NSView()),
-            pairingInstructions, pairingLabel, UI.row(receiveButton, resetButton, NSView()), spacing: 10))
+        let pairingAction = UI.row(pairSenderButton, NSView())
+        // The horizontal spacer must not make this row absorb spare window height.
+        pairingAction.heightAnchor.constraint(equalTo: pairSenderButton.heightAnchor).isActive = true
+        let receiverSummary = UI.column(statusLabel, connectionLabel, pairingAction, spacing: 6)
+        receiverSummary.setHuggingPriority(.required, for: .vertical)
 
         displayPicker.setAccessibilityLabel("Output display")
         displayPicker.target = self; displayPicker.action = #selector(displayChanged)
@@ -182,7 +210,9 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         let displayCard = UI.card("Output display", content: UI.column(displayPicker,
             UI.row(open, close, NSView()), outputLabel,
             UI.label("Use Preview Window to rehearse, or choose your connected display.", size: 11, color: .secondaryLabelColor), spacing: 10))
-        let inspector = UI.column(UI.scrolling(receiverCard), displayCard, spacing: 14)
+        let inspector = UI.column(receiverSummary, displayCard, spacing: 14)
+        inspector.distribution = .fill
+        inspector.setHuggingPriority(.required, for: .vertical)
         inspector.widthAnchor.constraint(equalToConstant: 300).isActive = true
         inspector.setAccessibilityLabel("Output settings")
 
@@ -203,7 +233,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         body.alignment = .top; body.spacing = 24
         monitor.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -324).isActive = true
         monitor.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
-        inspector.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        inspector.heightAnchor.constraint(lessThanOrEqualTo: body.heightAnchor).isActive = true
         let root = UI.column(UI.pageHeading("Output", subtitle: "Receive from your presentation app and monitor this Mac’s picture."), body, spacing: 20)
         root.distribution = .fill
         // Seed tab geometry before the first layout pass.
@@ -260,10 +290,21 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         nameField.drawsBackground = !status.listening
         nameField.isBezeled = !status.listening
         nameField.toolTip = status.listening ? "Pause receiving to change this Mac’s receiver name." : nil
-        statusLabel.stringValue = status.listening ? (status.ownerName == nil ? "Ready to receive" : "Receiving text") : (status.message.hasPrefix("Could not") ? status.message : "Receiving paused")
+        statusLabel.stringValue = status.listening
+            ? (status.ownerName != nil ? "Receiving text" : status.connections > 0 ? "Sender connected" : "Ready to receive")
+            : (status.message.hasPrefix("Could not") ? status.message : "Receiving paused")
         statusLabel.textColor = status.listening ? .systemGreen : .secondaryLabelColor
-        pairingInstructions.stringValue = status.listening
-            ? "Choose this Mac in your sending app’s AltView settings and enter this code."
+        let senderNames = status.connectedSenders.map { $0.id == composer.senderID ? "Text on this Mac" : $0.name }.joined(separator: ", ")
+        let connectionText = status.connections > 0 ? "Connected to \(senderNames)" : "No sender connected"
+        connectionLabel.stringValue = connectionText
+        connectionLabel.toolTip = connectionText
+        pairingStatusLabel.stringValue = connectionText
+        pairingStatusLabel.toolTip = connectionText
+        pairingStatusLabel.textColor = status.connections > 0 ? .systemGreen : .secondaryLabelColor
+        pairingInstructions.stringValue = status.connections > 0
+            ? "Already connected. Use this code only to pair another sender."
+            : status.listening
+            ? "In your sending app’s AltView settings, connect to this Mac. Enter this code only if asked."
             : "Resume receiving, then choose this Mac in your sending app’s AltView settings and enter the code."
         networkLabel.stringValue = status.port.map { "Visible on your local network · Port \($0)\n\(status.connections) connected sender\(status.connections == 1 ? "" : "s")" } ?? "Resume receiving to let another Mac connect."
         statusLabel.toolTip = networkLabel.stringValue
@@ -271,6 +312,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         ownerLabel.stringValue = status.ownerName.map { "From \(status.ownerID == composer.senderID ? "Text on this Mac" : $0)" }
             ?? (status.connections > 0 ? "Sender connected · waiting for text" : "No active sender")
         ownerLabel.toolTip = ownerLabel.stringValue
+        pairSenderButton.title = status.connections > 0 ? "Pair another sender…" : "Pair a sender…"
         clearButton.isEnabled = status.ownerName != nil
         // Commit the frozen design only when the receiver accepts this sender's
         // requested text. A failed connection cannot restyle an external source.
@@ -385,6 +427,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.copyButton.title = "Copy Code" }
     }
     @objc private func resetPairing() {
+        settingsPopover.performClose(nil)
         let alert = NSAlert()
         alert.messageText = "Reset AltView pairing?"
         alert.informativeText = "Connected senders will disconnect and output will clear. Each sender will need the new pairing code."

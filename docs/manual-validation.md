@@ -2,6 +2,18 @@
 
 This checklist intentionally uses only AltView. ViewTheWord and eucaly integrations are a separate step.
 
+## Connected pairing feedback and spacing — 2 October 2026
+
+- Output and Settings now show **Connected to [sender]**, including Connect Only sessions. Output distinguishes **Sender connected** from **Receiving text**, and its shortcut becomes **Pair another sender…**. **No sender connected** does not imply that a saved pairing has been forgotten.
+- Reproduced the growing gap around the pairing shortcut with real encrypted clients. Its horizontal spacer was expanding vertically; the row now follows the button’s height and the inspector keeps its controls at the top.
+- All **41 selected tests** passed in `build/ConnectedPairing-Verified.xcresult`: 30 window tests, 10 text-session tests and the encrypted connection/ownership/reconnection regression. The new check covers connecting while Settings is open, two named senders, publishing, releasing without disconnecting, and disconnecting. It measures the control gaps at 980 × 650 and 1280 × 900 in light and dark appearances. AppKit-rendered test attachments were also inspected for connected-state text and spacing.
+
+## Pairing in Settings — 2 October 2026
+
+- Receiver name, pairing code, Copy/Reset Code and Pause/Resume Receiving now live in the gear popover alongside Custom Text. Output keeps receiving status and display controls, with **Pair a sender…** visible while no sender is connected.
+- All **29 window tests** and **10 text-session tests** passed in `build/PairingSettings-Complete.xcresult`. Checks cover opening Settings from the shortcut and gear, readable pairing controls, pause/resume across page changes, receiver-name persistence, shortcut visibility after connecting/disconnecting, and compact light/dark layouts.
+- Native inspection verified the compact popover, reopening it, and the Output layout. The temporary Debug instance reported an occupied receiver port while another local instance was listening; the automated receiver checks used ephemeral ports. The temporary instance was closed after inspection.
+
 ## Status and destination revision — 30 September 2026
 
 - Text now scopes all state to its selected destination; this Mac’s receiver status appears only on Output. Fixed DRAFT badges are replaced by an actual unpublished-change indicator, and Design explicitly applies to this Mac.
@@ -75,7 +87,7 @@ Earlier opt-in implementation, 30 September 2026: all 82 tests passed (`build/Cu
 ## Two Macs and the Air
 
 - Run the universal app on the 2017 Intel Air with macOS 12 Monterey. Confirm the app launches before attaching HDMI.
-- Confirm Output visibly shows eight characters, with no `0`, `1`, `I`, or `O`. Type the displayed code on the main Mac (also try lowercase), and choose Connect & Publish Text. Copy Code must match the visible code. Repeat using a manual host/port. If the app says the code changes when AltView restarts, enter the new code after each receiver restart.
+- Open **gear → Settings → Receive on this Mac** and confirm the pairing code visibly shows eight characters, with no `0`, `1`, `I`, or `O`. Type the displayed code on the main Mac (also try lowercase), and choose Connect & Publish Text. Copy Code must match the visible code. Repeat using a manual host/port. If the app says the code changes when AltView restarts, enter the new code after each receiver restart.
 - Reset Code: existing connections and output must clear, the visible code must update, and an active receiver must resume automatically. A paused receiver must stay paused. Only the new code may connect. Both Macs must use this version; old 64-character codes are rejected.
 - Wrong pairing code must not connect. An explicitly re-paired receiver is accepted; a changed receiver identity must not silently replace a previously pinned receiver.
 - Turn the sender's network off while it owns output. The receiver should clear in about five seconds. Controls on both Macs remain responsive.

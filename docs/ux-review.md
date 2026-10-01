@@ -18,7 +18,8 @@ The main failure was ambiguity about what a label described. Text could show DRA
 
 ## Page responsibilities
 
-- **Output:** receiving on this Mac, pairing details, the current source, output preview, and physical display/window controls. Receiving readiness and display-open state are separate because a Mac can receive without opening its display.
+- **Output:** receiving status on this Mac, the current source, output preview, and physical display/window controls. Receiving readiness and display-open state are separate because a Mac can receive without opening its display.
+- **Settings (gear):** receiver name, pairing code, Copy/Reset Code, Pause/Resume Receiving, and Custom Text. Output and Settings name connected senders. The shortcut changes from **Pair a sender…** to **Pair another sender…** while connected, and the Output controls stay grouped at the top without an expanding gap.
 - **Design:** appearance for this Mac. Preview changes remain private until Apply or a local Text publication. It cannot change another Mac’s design.
 - **Text:** the editable message, its destination, the local message preview or complete remote sent-text copy, and publication controls. “Published” describes the submitted message, not proof of visibility on an external display.
 

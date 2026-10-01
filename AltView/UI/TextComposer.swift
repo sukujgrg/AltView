@@ -195,7 +195,9 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         let actions = UI.row(presentationBadge, statusLabel, NSView(), hideButton, stopButton, showButton)
         actions.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
         changesBadge.setAccessibilityIdentifier("textDraftStatus")
-        let header = UI.row(UI.pageHeading("Text", subtitle: "Write a message, then publish it to your chosen Mac."), NSView(), changesBadge)
+        let header = UI.row(UI.pageHeading("Text", subtitle: "Write a message, then publish it to your chosen Mac."), changesBadge)
+        // Give the heading the remaining width so its subtitle cannot collapse beside a spacer.
+        header.distribution = .fill
         let root = UI.column(header, destination, body, UI.separator(), UI.column(actions, statusDetail, spacing: 4), spacing: 16)
         // Expand the editor with the page while keeping publishing actions at the bottom.
         root.distribution = .fill
@@ -419,7 +421,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         if portField.constraints.isEmpty { portField.widthAnchor.constraint(equalToConstant: 75).isActive = true }
         codeField.delegate = self
         codeField.stringValue = ""
-        pairingHint.stringValue = "Type the 8-character code shown in Output on the other Mac. Leave blank to use a saved pairing."
+        pairingHint.stringValue = "On the other Mac, click the gear in AltView to find its 8-character code in Settings. Leave blank to use a saved pairing."
         connectionStatusLabel.stringValue = session.canShow
             ? "Connect & Publish Text publishes your draft and replaces any current source. Connect Only keeps your draft private."
             : "Connecting keeps the output unchanged. Write your message, then choose Publish Text."
@@ -529,7 +531,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
                 if let key = PairingKey.parse(entered) { return key }
                 if let key = remembered?.key { return key }
                 if let key = try? loadPairing(account) { return key }
-                throw ComposerConnectionError(message: "No saved pairing for this Mac. Enter the code shown in Output on that Mac.")
+                throw ComposerConnectionError(message: "No saved pairing for this Mac. Enter the code in AltView’s Settings (gear icon) on that Mac.")
             }
             DispatchQueue.main.async {
                 guard let self, self.connectionRevision == revision, self.connectionSheet != nil else { return }
