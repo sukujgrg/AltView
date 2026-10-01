@@ -86,10 +86,16 @@ final class WindowTests: XCTestCase {
         keepSpace.performClick(nil)
         XCTAssertFalse(changes.isHidden)
         try button("Hide Text", in: root).performClick(nil)
-        eventually("hidden content reflected in the workspace") { badge.text == "HIDDEN" }
+        // The composer badge updates immediately; the receiver changes after
+        // the snapshot travels over the local connection and returns to the UI.
+        eventually("hidden content reflected in the workspace and receiver") {
+            badge.text == "HIDDEN" && !controller.receiverStatus.content.visible
+        }
         XCTAssertFalse(controller.receiverStatus.content.visible)
         try button("Show Last Text", in: root).performClick(nil)
-        eventually("showing last text keeps the new spacing private") { controller.receiverStatus.content.visible }
+        eventually("showing last text keeps the new spacing private") {
+            badge.text == "PUBLISHED" && controller.receiverStatus.content.visible
+        }
         XCTAssertEqual(controller.receiverStatus.content.emptyRegions, .collapse)
         XCTAssertFalse(changes.isHidden)
         try button("Stop Presenting", in: root).performClick(nil)
