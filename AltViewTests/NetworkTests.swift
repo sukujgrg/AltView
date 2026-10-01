@@ -96,6 +96,36 @@ final class NetworkTests: XCTestCase {
         b.disconnect()
         eventually("owner disconnect clears") { output.content == .empty && output.ownerName == nil }
     }
+    func testSnapshotAcceptanceAndDisplayReadinessAreIndependent() throws {
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus(), status = SenderStatus()
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        let sender = SenderClient(name: "Feedback") { status = $0 }
+        server.start(name: "Feedback", key: key, advertise: false)
+        defer { sender.disconnect(); server.stop() }
+        eventually("listener") { output.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
+        eventually("feedback received") { status.connected && status.feedback.output == .closed }
+        XCTAssertFalse(status.feedback.accepted)
+        sender.submit(.scripture); sender.takeOutput()
+        eventually("accepted with output closed") { status.feedback.accepted && output.content == .scripture }
+        XCTAssertEqual(status.feedback.output, .closed)
+        let revision = status.feedback.acceptedRevision
+        for readiness: OutputReadiness in [.ready, .displayMissing, .preview, .minimized, .unavailable, .asleep, .closed] {
+            server.updateOutputReadiness(readiness)
+            eventually("readiness changes without text") { status.feedback.output == readiness }
+            XCTAssertEqual(status.feedback.acceptedRevision, revision)
+        }
+        for index in 0..<2_000 { sender.submit(DisplayContent(body: "Verse \(index)")) }
+        sender.submit(DisplayContent(body: "Final", visible: false))
+        eventually("latest burst accepted") { output.content.body == "Final" && status.feedback.sentRevision > revision && status.feedback.accepted }
+        XCTAssertFalse(output.content.visible)
+        sender.releaseOutput()
+        eventually("release clears acceptance") { !status.ownsOutput && output.ownerID == nil }
+        XCTAssertEqual(status.feedback.acceptedRevision, 0)
+        sender.disconnect()
+        eventually("disconnect clears readiness") { !status.connected && status.feedback.output == nil }
+    }
     func testWrongPairingKeyCannotConnect() throws {
         let key = try XCTUnwrap(PairingKey.parse("ABCD2345"))
         var output = ReceiverStatus()

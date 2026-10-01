@@ -1,4 +1,4 @@
-# AltView protocol v1 and implementation boundaries
+# AltView protocol v2 and implementation boundaries
 
 ## Roles
 
@@ -36,13 +36,13 @@ The sender’s connection sheet stays open through authentication. Connect Only 
 
 Every message is UTF-8 JSON preceded by a four-byte unsigned big-endian payload length. Valid lengths are 1…65,536 bytes, excluding the header. Receives are incremental and tolerate fragmented and combined frames. Reject malformed JSON, unknown kinds, unsupported versions, invalid lengths, and invalid required fields by closing the connection.
 
-All messages carry `version: 1` and a `kind` string. Optional fields omitted by Swift's encoder need not be sent as JSON null. UUIDs use standard strings. Revisions are unsigned 64-bit integers; integrations in JavaScript should keep revisions within its exact integer range or handle them without lossy number conversions.
+All messages carry `version: 2` and a `kind` string. Optional fields omitted by Swift's encoder need not be sent as JSON null. UUIDs use standard strings. Revisions are unsigned 64-bit integers; integrations in JavaScript should keep revisions within its exact integer range or handle them without lossy number conversions.
 
 Example state payload (framing header omitted):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "kind": "state",
   "lease": "8D25A6AC-E5B5-42FC-BA0B-2EAA1F2E5F88",
   "revision": 1,
@@ -75,7 +75,7 @@ The same content with empty spaces preserved:
 {"body":"Welcome everyone","visible":true,"emptyRegions":"reserve"}
 ```
 
-These are content objects inside a framed `state` message, not HTTP request bodies. The native encoder still includes title and footer strings, so its snapshots remain readable by older v1 receivers. Older receivers require both strings and ignore `emptyRegions`; update the receiver to use the new spacing behavior.
+These are content objects inside a framed `state` message, not HTTP request bodies. Protocol v2 requires updating both sender and receiver; v1 connections are rejected. There is no capability negotiation or compatibility fallback.
 
 ## Handshake and ownership
 
@@ -89,6 +89,7 @@ These are content objects inside a framed `state` message, not HTTP request bodi
 | Receiver → all | `ownership` | Optional `ownerID`, `ownerName`, and `lease`; absent owner fields mean unowned. |
 | Sender → receiver | `state` | `lease`, increasing `revision`, complete `content`. Apply only from the owning connection with the current lease. |
 | Sender → receiver | `release` | Current `lease`. Clears only that connection's own output and revokes ownership. |
+| Receiver → sender | `feedback` | Required `outputReadiness`; optional matching `lease` and positive `revision` acknowledge the latest accepted snapshot for this owning connection. |
 | Both | `heartbeat` | Keeps liveness observable even while content is unchanged. |
 | Receiver → sender | `error` | Optional human-readable `detail`; the current receiver usually closes invalid sessions instead. |
 
@@ -98,12 +99,26 @@ Blank is a full state with `visible: false`, retaining its text. Clear is empty 
 
 The sender pins the receiver UUID after connection and refuses automatic reconnection to a different identity. A newly entered pairing code constitutes explicit pairing and can accept a new receiver UUID. Automatic reconnect uses 1, 2, 4, then 8-second delays. Only the former owner requests `resume`; explicit Release/Disconnect cancels restoration.
 
+## Snapshot acknowledgements and output readiness
+
+After `welcome`, every sender receives `feedback`. The receiver also sends it after accepting a newer snapshot, when ownership changes, and when output readiness changes. Feedback is a complete current report: `lease` and `revision` are both absent if this connection owns no accepted snapshot. Stale revisions and leases never generate a new acknowledgement. Other senders receive readiness without another owner's revision.
+
+`outputReadiness` is `closed`, `ready` (full-screen output window open), `preview` (windowed preview only), `displayMissing`, `minimized`, `unavailable` (required artwork missing/loading), or `asleep`. It describes the active output target, not an unapplied selection in the display picker. Acceptance means the receiver's ownership reducer accepted the content. It does **not** certify a rendered frame, finished animation, HDMI signal, switcher selection, or projector image. A snapshot can be accepted while output is closed or unavailable.
+
+Feedback has one replaceable outbox slot and cannot grow the control queue. It includes the latest accepted revision, so intermediate acknowledgements can be skipped during bursts. Senders never wait for it before sending another state or projecting locally. After five seconds without acknowledgement progress, the sender shows a delayed-acknowledgement notice while continuing to send; this does not release ownership, resend text, or reconnect. Valid progress clears the notice. Release/takeover clears snapshot confirmation; disconnect clears all feedback, and reconnect starts with a new lease and revision sequence. ViewTheWord also correlates status with its current local submission so a previous acknowledgement cannot confirm a newer verse or blank.
+
+Example feedback payload:
+
+```json
+{"version":2,"kind":"feedback","lease":"8D25A6AC-E5B5-42FC-BA0B-2EAA1F2E5F88","revision":12,"outputReadiness":"closed"}
+```
+
 ## Bounds and UI isolation
 
 - Maximum 8 simultaneous receiver connections.
 - Content limits in UTF-8 bytes: title 512, body 24,000, footer 1,024. Frame encoding is also capped; JSON escaping counts toward the frame size.
 - `SnapshotMailbox` retains one latest submission and at most one queued drain job. Its lock protects a small value swap; it never holds a lock during encoding, drawing, or network work.
-- `MessageOutbox` retains at most 16 controls, one newest state, and one heartbeat, in addition to one in-flight send. Overflow closes the slow connection.
+- `MessageOutbox` retains at most 16 controls, one newest state, one newest feedback report, and one heartbeat, in addition to one in-flight send. Overflow closes the slow connection.
 - Socket reads are bounded. Sender connection setup allows 30 seconds for discovery, Local Network consent and TLS; temporary network waits can recover within that budget. Once TLS is ready, the sender allows five seconds for `welcome`. Accepted receiver connections must identify themselves within five seconds. Established peers use a five-second liveness and stuck-send deadline, checked approximately once per second.
 - Receiver status delivery to the main thread is coalesced. Rendering never performs socket work.
 
@@ -117,7 +132,7 @@ The renderer uses an sRGB keying background, white text, native font fallback an
 
 ## Receiver-local lower thirds
 
-The wire protocol remains version 1 and carries text with an optional empty-row spacing preference. `LowerThirdTemplate` is stored separately from `OutputStyle` under `lowerThirdTemplate`; absent settings leave the feature disabled, so existing style preferences decode unchanged. Artwork source, imported asset UUID/name, alignment, percentage rectangles and motion settings belong entirely to the receiver. Senders do not send artwork or wait for image processing. Receiver-local `showsArtwork`, `showsTitle` and `showsFooter` switches default to true when decoding older designs. Hiding artwork preserves its source, asset and rectangle while omitting it from rendering, guides and animation bounds; text geometry is unchanged. Rendering and accessibility filter disabled text without altering the sender snapshot. `resolved(for:)` also collapses unused label rows according to the content’s `emptyRegions` preference. `effectiveBodyRegion` extends the saved body’s vertical span to include the resolved hidden rows, preserving its X and width. Text fitting, rendering, preview guides and animation bounds use that effective region; the stored body rectangle stays unchanged so returning labels restore their layout. The editor’s numeric fields describe saved geometry and explicit Design switches; preview guides reflect the selected content’s actual boxes. Normal text output ignores the lower-third switches but honors `emptyRegions` in its own flowing layout.
+The wire protocol is version 2 and carries text with an optional empty-row spacing preference. `LowerThirdTemplate` is stored separately from `OutputStyle` under `lowerThirdTemplate`; absent settings leave the feature disabled, so existing style preferences decode unchanged. Artwork source, imported asset UUID/name, alignment, percentage rectangles and motion settings belong entirely to the receiver. Senders do not send artwork or wait for image processing. Receiver-local `showsArtwork`, `showsTitle` and `showsFooter` switches default to true when decoding older designs. Hiding artwork preserves its source, asset and rectangle while omitting it from rendering, guides and animation bounds; text geometry is unchanged. Rendering and accessibility filter disabled text without altering the sender snapshot. `resolved(for:)` also collapses unused label rows according to the content’s `emptyRegions` preference. `effectiveBodyRegion` extends the saved body’s vertical span to include the resolved hidden rows, preserving its X and width. Text fitting, rendering, preview guides and animation bounds use that effective region; the stored body rectangle stays unchanged so returning labels restore their layout. The editor’s numeric fields describe saved geometry and explicit Design switches; preview guides reflect the selected content’s actual boxes. Normal text output ignores the lower-third switches but honors `emptyRegions` in its own flowing layout.
 
 `PNGArtworkStore` reads bounded data, verifies ImageIO's PNG type/frame count/dimensions, decodes a thumbnail on its private queue, then atomically saves an app-owned UUID-named copy. The user-selected read-only sandbox entitlement and scoped access permit asynchronous import. Only app-owned superseded copies are removed; the user's original file is untouched. Completion tokens prevent stale imports/loads from replacing newer state. An unavailable selected custom asset suppresses the composition only while artwork is shown, and shows a reimport route with no silent branding fallback. Hidden artwork does not require its PNG to apply a design or publish text.
 

@@ -1,7 +1,7 @@
 import Foundation
 
 enum AltViewProtocol {
-    static let version = 1
+    static let version = 2
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
@@ -52,7 +52,7 @@ extension DisplayContent {
 /// by the receiver before use. Unknown message types cannot change output.
 struct WireMessage: Codable, Equatable {
     enum Kind: String, Codable {
-        case hello, welcome, take, resume, granted, state, ownership, release, heartbeat, error
+        case hello, welcome, take, resume, granted, state, ownership, release, heartbeat, error, feedback
     }
     var version = AltViewProtocol.version
     var kind: Kind
@@ -65,6 +65,7 @@ struct WireMessage: Codable, Equatable {
     var ownerID: UUID?
     var ownerName: String?
     var detail: String?
+    var outputReadiness: OutputReadiness?
 }
 
 enum ProtocolFailure: Error, LocalizedError {
@@ -105,16 +106,18 @@ struct FrameDecoder {
     }
 }
 
-/// A slow socket retains one latest snapshot, one heartbeat, and a bounded set
+/// A slow socket retains one latest snapshot, one feedback message, one heartbeat, and a bounded set
 /// of controls. It never accumulates a history of text updates.
 struct MessageOutbox {
     private var controls: [WireMessage] = []
     private(set) var latestState: WireMessage?
+    private var feedback: WireMessage?
     private var heartbeat: WireMessage?
-    var count: Int { controls.count + (latestState == nil ? 0 : 1) + (heartbeat == nil ? 0 : 1) }
+    var count: Int { controls.count + (latestState == nil ? 0 : 1) + (heartbeat == nil ? 0 : 1) + (feedback == nil ? 0 : 1) }
     mutating func enqueue(_ message: WireMessage) throws {
         switch message.kind {
         case .state: latestState = message
+        case .feedback: feedback = message
         case .heartbeat: heartbeat = message
         default:
             guard controls.count < 16 else { throw ProtocolFailure.overloaded }
@@ -124,8 +127,68 @@ struct MessageOutbox {
     mutating func next() -> WireMessage? {
         if !controls.isEmpty { return controls.removeFirst() }
         if let state = latestState { latestState = nil; return state }
+        if let message = feedback { feedback = nil; return message }
         defer { heartbeat = nil }
         return heartbeat
     }
     mutating func clearState() { latestState = nil }
+}
+
+/// Software output availability, independent of snapshot acceptance or HDMI delivery.
+enum OutputReadiness: String, Codable, Sendable {
+    case closed, ready, preview, displayMissing, minimized, unavailable, asleep
+
+    var summary: String {
+        switch self {
+        case .closed: return "Output window closed"
+        case .ready: return "Output window open"
+        case .preview: return "Preview window only"
+        case .displayMissing: return "Output display disconnected"
+        case .minimized: return "Output window minimized"
+        case .unavailable: return "Output unavailable — check artwork in AltView"
+        case .asleep: return "Receiver display asleep"
+        }
+    }
+}
+
+/// Queue-confined, bounded feedback. Missing acknowledgements never gate publication.
+struct DeliveryFeedback: Equatable, Sendable {
+    private(set) var output: OutputReadiness?
+    private(set) var sentRevision: UInt64 = 0
+    private(set) var acceptedRevision: UInt64 = 0
+    private(set) var overdue = false
+    private var pendingSince: TimeInterval?
+    var accepted: Bool { sentRevision > 0 && acceptedRevision == sentRevision }
+
+    var detail: String {
+        let snapshot = sentRevision == 0 ? "No snapshot sent"
+            : accepted ? "Latest snapshot accepted by AltView"
+            : overdue ? "Snapshot acknowledgement delayed; sending continues"
+            : "Waiting for snapshot acknowledgement"
+        return "\(snapshot). \(output?.summary ?? "Waiting for display status")."
+    }
+    mutating func resetSnapshot() {
+        sentRevision = 0; acceptedRevision = 0; pendingSince = nil; overdue = false
+    }
+    mutating func sent(_ revision: UInt64, now: TimeInterval) {
+        sentRevision = revision
+        if pendingSince == nil { pendingSince = now }
+    }
+    mutating func receive(_ message: WireMessage, lease: UUID?, now: TimeInterval) {
+        guard message.kind == .feedback, let output = message.outputReadiness else { return }
+        self.output = output
+        // A delayed response from a previous owner/lease can never confirm current text.
+        guard let lease, message.lease == lease, let revision = message.revision,
+              revision > acceptedRevision, revision <= sentRevision else { return }
+        acceptedRevision = revision
+        pendingSince = accepted ? nil : now
+        overdue = false
+    }
+    @discardableResult
+    mutating func checkTimeout(now: TimeInterval) -> Bool {
+        let value = pendingSince.map { now - $0 >= AltViewProtocol.timeout } ?? false
+        guard value != overdue else { return false }
+        overdue = value
+        return true
+    }
 }

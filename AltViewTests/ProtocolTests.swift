@@ -2,6 +2,48 @@ import XCTest
 @testable import AltView
 
 final class ProtocolTests: XCTestCase {
+    func testFeedbackStaysBoundedAndYieldsToSnapshotsAndControls() throws {
+        var outbox = MessageOutbox()
+        let lease = UUID()
+        for revision in 1...10_000 {
+            try outbox.enqueue(WireMessage(kind: .feedback, lease: lease, revision: UInt64(revision), outputReadiness: .ready))
+        }
+        try outbox.enqueue(WireMessage(kind: .state, revision: 1))
+        try outbox.enqueue(WireMessage(kind: .ownership))
+        XCTAssertEqual(outbox.count, 3)
+        XCTAssertEqual(outbox.next()?.kind, .ownership)
+        XCTAssertEqual(outbox.next()?.kind, .state)
+        let feedback = try XCTUnwrap(outbox.next())
+        XCTAssertEqual(feedback.revision, 10_000)
+        var decoder = FrameDecoder()
+        XCTAssertEqual(try decoder.append(FrameCodec.encode(feedback)), [feedback])
+        XCTAssertNil(outbox.next())
+    }
+    func testAcknowledgementsAreLeaseScopedAndTimeoutNeverStopsNewSnapshots() {
+        let lease = UUID()
+        var feedback = DeliveryFeedback()
+        feedback.sent(1, now: 0)
+        feedback.sent(2, now: 1)
+        feedback.receive(WireMessage(kind: .feedback, lease: UUID(), revision: 2, outputReadiness: .closed), lease: lease, now: 2)
+        XCTAssertEqual(feedback.acceptedRevision, 0)
+        XCTAssertEqual(feedback.output, .closed)
+        feedback.receive(WireMessage(kind: .feedback, lease: lease, revision: 3, outputReadiness: .ready), lease: lease, now: 3)
+        XCTAssertEqual(feedback.acceptedRevision, 0, "A future revision cannot acknowledge unsent text")
+        XCTAssertTrue(feedback.checkTimeout(now: 6))
+        XCTAssertTrue(feedback.overdue)
+        feedback.sent(10, now: 7)
+        XCTAssertEqual(feedback.sentRevision, 10, "Feedback never gates new snapshots")
+        feedback.receive(WireMessage(kind: .feedback, lease: lease, revision: 10, outputReadiness: .ready), lease: lease, now: 8)
+        XCTAssertTrue(feedback.accepted)
+        XCTAssertFalse(feedback.overdue)
+        feedback.receive(WireMessage(kind: .feedback, lease: lease, revision: 1, outputReadiness: .preview), lease: lease, now: 9)
+        XCTAssertEqual(feedback.acceptedRevision, 10)
+        feedback.resetSnapshot()
+        XCTAssertFalse(feedback.accepted)
+        XCTAssertEqual(feedback.output, .preview, "Release keeps display information")
+        XCTAssertFalse(feedback.checkTimeout(now: 100))
+    }
+
     func testFramingHandlesEveryByteBoundaryAndUnicode() throws {
         let message = WireMessage(kind: .state, lease: UUID(), revision: 12, content: .multilingual)
         let data = try FrameCodec.encode(message)

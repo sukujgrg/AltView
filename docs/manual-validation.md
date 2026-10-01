@@ -1,5 +1,17 @@
 # Standalone validation
 
+## Snapshot feedback — 2 October 2026
+
+Protocol v2 requires both apps to be updated. Feedback reports receiver snapshot acceptance and software output readiness; it does not certify rendered frames or physical HDMI delivery.
+
+Validation completed:
+- AltView: all 102 tests passed in `build/OutputFeedbackV2Tests.xcresult`.
+- ViewTheWord: all 121 Swift tests and 8 review regression checks passed; the native Debug Xcode build succeeded.
+- A separate-process loopback TLS check compiled the actual AltView receiver and actual ViewTheWord sender sources, and passed acceptance, output readiness changes, blanking and release.
+- Regression coverage includes bounded feedback bursts, stale/future/previous-lease acknowledgements, continued sending while acknowledgements are suppressed, timeout recovery, takeover/disconnect resets, local submission identity, and native preview/open/close plus simulated screen-sleep/wake and missing-display states.
+
+Still manual: two-Mac network behavior, real HDMI attach/detach, real display sleep/wake and minimization, and downstream switcher/projector output. A closed or unavailable output can still accept a snapshot; verify that both facts appear in the sending app's status details.
+
 This checklist intentionally uses only AltView. ViewTheWord and eucaly integrations are a separate step.
 
 ## Connected pairing feedback and spacing — 2 October 2026

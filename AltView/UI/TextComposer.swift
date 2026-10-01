@@ -325,6 +325,9 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         else if remote && activeConnectionID != nil && !status.connected { presentationBadge.update("OFFLINE", color: .systemOrange) }
         else { presentationBadge.update("NOT PRESENTING") }
         statusLabel.toolTip = statusLabel.stringValue
+        if remote && status.connected {
+            statusDetail.stringValue += "\n" + status.feedback.detail
+        }
         if !remote && !localOutputNotice.isEmpty { statusDetail.stringValue = localOutputNotice }
         statusDetail.toolTip = statusDetail.stringValue
     }

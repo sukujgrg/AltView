@@ -17,6 +17,7 @@ final class ReceiverServer {
     private let queue = DispatchQueue(label: "com.suku.AltView.receiver", qos: .userInitiated)
     private var listener: NWListener?
     private var peers: [UUID: PeerChannel] = [:]
+    private var outputReadiness = OutputReadiness.closed
     private var state = ReceiverState()
     private var status = ReceiverStatus()
     private var timer: DispatchSourceTimer?
@@ -73,6 +74,13 @@ final class ReceiverServer {
             }
         }
     }
+    func updateOutputReadiness(_ readiness: OutputReadiness) {
+        queue.async { [weak self] in
+            guard let self, self.outputReadiness != readiness else { return }
+            self.outputReadiness = readiness
+            self.broadcastFeedback()
+        }
+    }
     func stop() { queue.async { [weak self] in self?.stopOnQueue(); self?.publish() } }
     func clearOutput() {
         queue.async { [weak self] in
@@ -118,11 +126,13 @@ final class ReceiverServer {
         }
     }
     private func handle(_ message: WireMessage, from peer: PeerChannel) {
+        guard message.version == AltViewProtocol.version else { peer.close("Unsupported protocol version."); return }
         if message.kind == .hello {
             guard let id = message.senderID, let name = message.name, state.register(connection: peer.id, senderID: id, name: name) else {
                 peer.close("Invalid sender identity."); return
             }
             peer.send(WireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name))
+            sendFeedback(to: peer)
             publish()
             return
         }
@@ -140,7 +150,10 @@ final class ReceiverServer {
             guard let lease = message.lease, let revision = message.revision, let content = message.content, content.isValid else {
                 peer.close("Invalid content snapshot."); return
             }
-            if state.apply(connection: peer.id, lease: lease, revision: revision, content: content) { publish() }
+            if state.apply(connection: peer.id, lease: lease, revision: revision, content: content) {
+                publish()
+                sendFeedback(to: peer)
+            }
         case .release:
             if state.release(connection: peer.id, lease: message.lease) {
                 status.message = "Ready for senders"
@@ -154,6 +167,16 @@ final class ReceiverServer {
     private func broadcastOwnership() {
         let message = WireMessage(kind: .ownership, lease: state.lease, ownerID: state.owner?.id, ownerName: state.owner?.name)
         for (id, peer) in peers where state.senders[id] != nil { peer.send(message) }
+        broadcastFeedback()
+    }
+    private func broadcastFeedback() {
+        for peer in peers.values { sendFeedback(to: peer) }
+    }
+    private func sendFeedback(to peer: PeerChannel) {
+        guard state.senders[peer.id] != nil else { return }
+        let hasSnapshot = state.ownerConnection == peer.id && state.revision > 0
+        peer.send(WireMessage(kind: .feedback, lease: hasSnapshot ? state.lease : nil,
+                              revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness))
     }
     private func publish() {
         status.connections = state.senders.count

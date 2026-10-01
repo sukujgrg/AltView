@@ -10,11 +10,35 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
     private var reposition: DispatchWorkItem?
     var isActive: Bool { windowed || requestedDisplay != nil }
     var onChange: ((String) -> Void)?
+    var onReadinessChange: ((OutputReadiness) -> Void)?
+    private(set) var readiness = OutputReadiness.closed
+    private var displayAsleep = false
+    private var workspaceObservers: [NSObjectProtocol] = []
+
+    private func publishReadiness() {
+        let next: OutputReadiness
+        if !isActive { next = .closed }
+        else if let requestedDisplay, !NSScreen.screens.contains(where: { Self.displayID($0) == requestedDisplay }) { next = .displayMissing }
+        else if displayAsleep { next = .asleep }
+        else if output?.isMiniaturized == true { next = .minimized }
+        else if output?.isVisible != true { next = .closed }
+        else { next = windowed ? .preview : .ready }
+        guard next != readiness else { return }
+        readiness = next
+        onReadinessChange?(next)
+    }
 
     init(presentation: CanvasPresentation) {
         self.presentation = presentation
         super.init()
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification] {
+            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                self?.displayAsleep = notification.name == NSWorkspace.screensDidSleepNotification
+                self?.publishReadiness()
+            })
+        }
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.publishReadiness()
             self?.reposition?.cancel()
             let work = DispatchWorkItem { [weak self] in self?.reconcile() }
             self?.reposition = work
@@ -35,13 +59,18 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
         requestedDisplay = nil; windowed = false
         output?.delegate = nil; output?.close(); output = nil; canvas = nil
         onChange?("Output window closed")
+        publishReadiness()
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === output else { return }
         output = nil; canvas = nil; windowed = false; requestedDisplay = nil
         onChange?("Output window closed")
+        publishReadiness()
     }
+    func windowDidMiniaturize(_ notification: Notification) { publishReadiness() }
+    func windowDidDeminiaturize(_ notification: Notification) { publishReadiness() }
     private func reconcile() {
+        defer { publishReadiness() }
         let screen = requestedDisplay.flatMap { id in NSScreen.screens.first { Self.displayID($0) == id } }
         guard windowed || screen != nil else {
             output?.delegate = nil; output?.close(); output = nil; canvas = nil
@@ -79,5 +108,9 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
         window.orderFrontRegardless()
         onChange?(windowed ? "Preview output window open" : "Output on \(screen!.localizedName)")
     }
-    deinit { if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }; reposition?.cancel() }
+    deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        reposition?.cancel()
+    }
 }

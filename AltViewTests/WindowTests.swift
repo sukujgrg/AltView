@@ -10,6 +10,45 @@ private final class LayoutTestWindow: NSWindow {
 }
 
 final class WindowTests: XCTestCase {
+    func testOutputReadinessTracksPreviewSleepCloseAndMissingDisplay() throws {
+        _ = NSApplication.shared
+        let controller = OutputWindowController(presentation: CanvasPresentation())
+        var states: [OutputReadiness] = []
+        controller.onReadinessChange = { states.append($0) }
+        defer { controller.stop() }
+        XCTAssertEqual(controller.readiness, .closed)
+        controller.show(displayID: nil)
+        XCTAssertEqual(controller.readiness, .preview)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        XCTAssertEqual(controller.readiness, .asleep)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        XCTAssertEqual(controller.readiness, .preview)
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Output" && $0.isVisible })
+        window.close()
+        XCTAssertEqual(controller.readiness, .closed)
+        controller.show(displayID: UInt32.max)
+        XCTAssertEqual(controller.readiness, .displayMissing)
+        controller.stop()
+        XCTAssertEqual(states, [.preview, .asleep, .preview, .closed, .displayMissing, .closed])
+    }
+    func testReceiverWindowReportsReadinessOverTheConnection() throws {
+        let key = try PairingKey.generate()
+        let domain = "AltViewTests.Feedback.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0)
+        var status = SenderStatus()
+        let sender = SenderClient(name: "Window feedback") { status = $0 }
+        defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver listening") { controller.receiverStatus.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
+        eventually("closed reported") { status.feedback.output == .closed }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        try button("Open Output", in: root).performClick(nil)
+        eventually("preview reported") { status.feedback.output == .preview }
+        controller.closeOutput()
+        eventually("close reported") { status.feedback.output == .closed }
+    }
+
     private func layoutWindow() -> NSWindow {
         LayoutTestWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)

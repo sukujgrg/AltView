@@ -9,6 +9,7 @@ struct SenderStatus: Equatable {
     var ownerName: String?
     var message = "Not connected"
     var failureReason: String?
+    var feedback = DeliveryFeedback()
 }
 
 /// No network operation or serialization runs on the caller's UI thread.
@@ -72,6 +73,7 @@ final class SenderClient {
             if let lease = self.lease { self.peer?.send(WireMessage(kind: .release, lease: lease)) }
             self.lease = nil
             self.status.ownsOutput = false
+            self.status.feedback.resetSnapshot()
             self.publish()
         }
     }
@@ -122,6 +124,7 @@ final class SenderClient {
             self.shouldRestoreOwnership = self.status.ownsOutput || self.shouldRestoreOwnership
             self.peer = nil; self.lease = nil
             self.status.connected = false; self.status.ownsOutput = false
+            self.status.feedback = DeliveryFeedback()
             self.timer?.cancel(); self.timer = nil
             if let deadline = self.initialConnectionDeadline {
                 if self.wantsConnection, peer.retryableSetupFailure, ProcessInfo.processInfo.systemUptime < deadline {
@@ -146,11 +149,13 @@ final class SenderClient {
         timer.setEventHandler { [weak self, weak peer] in
             guard let self, let peer else { return }
             if self.status.connected { peer.send(WireMessage(kind: .heartbeat)) }
+            if self.status.feedback.checkTimeout(now: ProcessInfo.processInfo.systemUptime) { self.publish() }
             peer.checkTimeout(now: ProcessInfo.processInfo.systemUptime)
         }
         self.timer = timer; timer.resume()
     }
     private func handle(_ message: WireMessage) {
+        guard message.version == AltViewProtocol.version else { wantsConnection = false; peer?.close("Incompatible AltView protocol. Update both apps."); return }
         switch message.kind {
         case .welcome:
             guard !status.connected, let receiverID = message.receiverID else { peer?.close("Invalid welcome."); return }
@@ -161,6 +166,7 @@ final class SenderClient {
                 publish()
                 return
             }
+            status.feedback = DeliveryFeedback()
             expectedReceiverID = receiverID
             initialConnectionDeadline = nil
             attempts = 0; status.connected = true; status.receiverID = receiverID
@@ -172,6 +178,7 @@ final class SenderClient {
         case .granted:
             guard status.connected, let lease = message.lease else { return }
             self.lease = lease; revision = 0
+            status.feedback.resetSnapshot()
             status.ownsOutput = true; shouldRestoreOwnership = true
             status.message = "Controlling output"
             sendLatest(); publish()
@@ -179,9 +186,17 @@ final class SenderClient {
             status.ownerName = message.ownerName
             if message.ownerID != senderID || message.lease != lease {
                 lease = nil; status.ownsOutput = false; shouldRestoreOwnership = false
+                status.feedback.resetSnapshot()
                 peer?.discardPendingState()
                 status.message = message.ownerName.map { "Output controlled by \($0)" } ?? "Connected — output is clear"
             }
+            publish()
+        case .feedback:
+            guard status.connected, message.outputReadiness != nil,
+                  (message.lease == nil && message.revision == nil) || (message.lease != nil && message.revision.map { $0 > 0 } == true) else {
+                peer?.close("Unexpected output feedback."); return
+            }
+            status.feedback.receive(message, lease: lease, now: ProcessInfo.processInfo.systemUptime)
             publish()
         case .heartbeat: break
         case .error: status.message = message.detail ?? "Receiver rejected the message"; publish()
@@ -193,7 +208,9 @@ final class SenderClient {
         guard let lease, status.connected else { return }
         guard revision < UInt64.max else { peer?.close("Session revision exhausted."); return }
         revision += 1
+        status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
         peer?.send(WireMessage(kind: .state, lease: lease, revision: revision, content: latest))
+        publish()
     }
     private func scheduleReconnect() {
         guard wantsConnection else { return }

@@ -36,4 +36,4 @@ The main failure was ambiguity about what a label described. Text could show DRA
 
 Automated checks exercise publication, ownership, local and remote destinations, dirty-state transitions, restoration of the last publication, full remote text, page scoping, and resizing. Final run results and the native visual-check outcome are recorded in manual-validation.md.
 
-Physical two-Mac, Intel/Monterey, HDMI/ATEM, and VoiceOver checks remain hardware validation. No new receiver-display telemetry or per-update delivery acknowledgement was added; the UI deliberately avoids claiming that a remote display is live.
+Physical two-Mac, Intel/Monterey, HDMI/ATEM, and VoiceOver checks remain hardware validation. Protocol v2 now reports snapshot acceptance and software output readiness asynchronously. The UI continues to avoid claiming rendered-frame or downstream HDMI delivery.

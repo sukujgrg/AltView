@@ -123,6 +123,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         if let data = defaults.data(forKey: "lowerThirdTemplate"),
            let saved = try? JSONDecoder().decode(LowerThirdTemplate.self, from: data) { template = saved.clamped() }
         server = ReceiverServer(receiverID: id) { [weak self] status in self?.update(status) }
+        output.onReadinessChange = { [weak self] _ in self?.refreshOutputReadiness() }
         output.onChange = { [weak self] text in
             self?.outputLabel.stringValue = text
             self?.composer?.updateLocalDisplay(text)
@@ -518,6 +519,12 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }
     @objc func closeOutput() { output.stop() }
     @objc private func clearOutput() { server.clearOutput() }
+    private func refreshOutputReadiness() {
+        let unavailable = template.requiresCustomArtwork && artwork == nil
+        let readiness = unavailable && (output.readiness == .ready || output.readiness == .preview)
+            ? OutputReadiness.unavailable : output.readiness
+        server.updateOutputReadiness(readiness)
+    }
     private func refreshCanvas() {
         var content = receiverStatus.content
         let unavailable = template.requiresCustomArtwork && artwork == nil
@@ -541,6 +548,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         }
         composer?.updateLocalOutput(owner: receiverStatus.ownerName, ownerID: receiverStatus.ownerID, notice: unavailable ? fitLabel.stringValue : "")
         templateEditor?.update(template: template, style: style, artwork: artwork, busy: artworkBusy, message: artworkMessage)
+        refreshOutputReadiness()
         refreshDraft()
     }
     private func refreshDraft() {

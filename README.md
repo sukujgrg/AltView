@@ -97,6 +97,8 @@ One sender owns the output at a time. **Publish Text & Design** locally, or **Pu
 
 A disconnected sender retries with bounded backoff. The previous owner may restore its latest snapshot when it reconnects, only if the receiver is still unowned. Connecting to an already occupied receiver never steals it automatically.
 
+Protocol v2 adds asynchronous snapshot acceptance and receiver output-readiness feedback. Update both AltView and ViewTheWord together; v1 connections are rejected. Remote Compose status shows whether the latest sent snapshot was accepted and whether the receiver output is open, preview-only, closed, disconnected, minimized, asleep, or unavailable. Acceptance does not confirm a rendered frame or downstream HDMI delivery. Delayed acknowledgements show a notice while sending continues.
+
 Network I/O, encoding, decoding, heartbeats, and retries use private queues. Text submissions retain only the newest pending snapshot; control queues and connection counts are bounded. A future ViewTheWord or eucaly integration can submit without waiting for the receiver, while the presentation app continues independently.
 
 ## Build and test
