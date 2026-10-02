@@ -2,6 +2,65 @@ import XCTest
 @testable import AltView
 
 final class ProtocolTests: XCTestCase {
+    func testContentTemplateIsOptionalAndTravelsWithEachSnapshot() throws {
+        let decoder = JSONDecoder()
+        for value in [#"{"body":"Text","visible":true}"#, #"{"body":"Text","visible":true,"template":null}"#] {
+            XCTAssertNil(try decoder.decode(DisplayContent.self, from: Data(value.utf8)).template)
+        }
+        for preset in ContentTemplate.builtIns + [ContentTemplate(rawValue: "speaker-intro")] {
+            let content = DisplayContent(title: "Reference", body: "Text", footer: "Translation", template: preset)
+            let message = WireMessage(kind: .state, lease: UUID(), revision: 1, content: content)
+            var frames = FrameDecoder()
+            XCTAssertEqual(try frames.append(FrameCodec.encode(message)), [message])
+        }
+        for value in [#"{"body":"Text","visible":true,"template":""}"#, #"{"body":"Text","visible":true,"template":42}"#,
+                      #"{"body":"Text","visible":true,"template":"bad id"}"#] {
+            XCTAssertThrowsError(try decoder.decode(DisplayContent.self, from: Data(value.utf8)))
+        }
+    }
+
+    func testTemplateCatalogueRoundTripAcceptsFutureIDsAndValidatesBounds() throws {
+        let future = TemplateDescriptor(id: ContentTemplate(rawValue: "speaker-intro"), name: "Speaker introduction")
+        let templates = TemplateDescriptor.builtIns + [future]
+        for kind: WireMessage.Kind in [.welcome, .feedback] {
+            let message = WireMessage(kind: kind, receiverID: UUID(), outputReadiness: .closed,
+                                      templates: templates, templatePolicy: .fixed(future.id))
+            var frames = FrameDecoder()
+            XCTAssertEqual(try frames.append(FrameCodec.encode(message)), [message])
+        }
+        XCTAssertTrue(TemplateCapabilities(templates: templates, policy: .fixed(future.id)).isValid)
+        XCTAssertTrue(TemplateCapabilities().isValid)
+        XCTAssertTrue(TemplateCapabilities(templates: [], policy: .custom).isValid)
+        for invalid in [
+            TemplateCapabilities(templates: [future, future]),
+            TemplateCapabilities(templates: [TemplateDescriptor(id: future.id, name: " \n")]),
+            TemplateCapabilities(templates: [TemplateDescriptor(id: future.id, name: String(repeating: "x", count: 129))]),
+            TemplateCapabilities(templates: (0...64).map { TemplateDescriptor(id: ContentTemplate(rawValue: "id-\($0)"), name: "Name") }),
+            TemplateCapabilities(templates: templates, policy: TemplatePolicy(mode: .fixed)),
+            TemplateCapabilities(templates: [], policy: .fixed(.lyrics)),
+            TemplateCapabilities(templates: templates, policy: TemplatePolicy(mode: .sender, template: .lyrics)),
+            TemplateCapabilities(policy: .custom)
+        ] { XCTAssertFalse(invalid.isValid) }
+        for id in ["", "bad id", String(repeating: "x", count: 65)] {
+            XCTAssertFalse(DisplayContent(body: "Text", template: ContentTemplate(rawValue: id)).isValid)
+        }
+    }
+
+    func testLegacyAndUnavailableTemplateFallbackKeepsTextAndDesiredChoice() {
+        let requested = DisplayContent(title: "Title", body: "Body", footer: "Footer", visible: false, emptyRegions: .reserve, template: .lyrics)
+        var unmarked = requested; unmarked.template = nil
+        for capabilities in [TemplateCapabilities(), TemplateCapabilities(templates: [])] {
+            XCTAssertEqual(capabilities.contentForSending(requested), unmarked)
+            XCTAssertFalse(capabilities.detail(requested: requested.template).isEmpty)
+        }
+        let available = TemplateCapabilities(templates: TemplateDescriptor.builtIns, policy: .custom)
+        XCTAssertEqual(available.contentForSending(requested), requested, "Receiver override must not erase the requested choice")
+        XCTAssertTrue(available.detail(requested: .lyrics).contains("overrides"))
+        let unknown = DisplayContent(body: "Body", template: ContentTemplate(rawValue: "future-template"))
+        XCTAssertNil(LowerThirdTemplate().selectedContentTemplate(for: unknown), "A removed or unknown ID uses custom layout on this receiver")
+        XCTAssertEqual(unknown.template?.rawValue, "future-template")
+    }
+
     func testFeedbackStaysBoundedAndYieldsToSnapshotsAndControls() throws {
         var outbox = MessageOutbox()
         let lease = UUID()

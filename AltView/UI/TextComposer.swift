@@ -51,6 +51,10 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     private let titleField = NSTextField(string: "")
     private let bodyEditor = NSTextView()
     private let footerField = NSTextField(string: "")
+    private let templatePicker = NSPopUpButton()
+    private let templateHint = UI.label("", size: 11, color: .secondaryLabelColor)
+    private var templateMenuEntries: [TemplateDescriptor]?
+    private var unavailableTemplate: ContentTemplate?
     private lazy var reserveEmptyRegions = NSButton(checkboxWithTitle: "Keep space for empty Title and Footer", target: self, action: #selector(emptyRegionsChanged))
     private let draftLabel = UI.label("Saved automatically on this Mac.", size: 12, color: .secondaryLabelColor)
     private let statusLabel = UI.label("Ready to publish on this Mac", size: 15, bold: true)
@@ -133,6 +137,11 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             field.heightAnchor.constraint(equalToConstant: 28).isActive = true
         }
         reserveEmptyRegions.state = session.draft.emptyRegions == .reserve ? .on : .off
+        templatePicker.setAccessibilityLabel("Requested text template")
+        templatePicker.target = self; templatePicker.action = #selector(templateChanged)
+        templatePicker.autoenablesItems = false
+        templatePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        templateHint.maximumNumberOfLines = 2
         reserveEmptyRegions.font = .systemFont(ofSize: 11)
         reserveEmptyRegions.toolTip = "Leave off to let Body use empty Title and Footer space. Rows hidden in the receiver’s Design still give their space to Body. Changes apply when you publish."
         bodyEditor.isRichText = false; bodyEditor.font = .systemFont(ofSize: 19)
@@ -147,6 +156,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         let fields = UI.column(
             UI.label("Your message", size: 13, bold: true),
+            UI.row(UI.label("Template", size: 12, bold: true), templatePicker), templateHint,
             UI.row(UI.label("Title", size: 12, bold: true), titleVisibility, NSView()), titleField,
             UI.label("Body", size: 12, bold: true), scroll,
             UI.row(UI.label("Footer", size: 12, bold: true), footerVisibility, NSView()), footerField,
@@ -258,6 +268,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         onPresentationActivityChange?()
         guard isViewLoaded else { return }
         let status = session.status
+        refreshTemplatePicker()
         let destination = remote ? (connectedName.isEmpty ? "the receiving Mac" : connectedName) : "this Mac"
         let unpublished = session.hasUnpublishedChanges || (!remote && designHasChanges)
         changesBadge.isHidden = !unpublished
@@ -266,7 +277,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         destinationName.stringValue = remote ? (connectedName.isEmpty ? "No receiver selected" : connectedName) : ""
         destinationName.isHidden = !remote
         destinationName.toolTip = destinationName.stringValue
-        destinationHint.stringValue = remote ? (connectionNote.isEmpty ? "Only text is sent. Set its appearance in Design on the receiving Mac." : connectionNote)
+        destinationHint.stringValue = remote ? (connectionNote.isEmpty ? "Text and your template choice are sent. The receiving Mac controls the final design." : connectionNote)
             : "Publishes your text and Design changes together. Open Output to choose this Mac’s display."
         showButton.title = session.pending != nil ? "Connecting…" : session.takingOutput ? "Showing…" : (remote && !status.connected ? "Connect & Publish Text…" : session.primaryTitle)
         if !remote {
@@ -277,9 +288,10 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             if remote { return "" }
             return shown ? (appliedShown ? "Visible" : "Will be shown when published") : "Hidden by Design · text is kept"
         }
-        let t = draftPresentation.template
-        titleVisibility.stringValue = visibility(t.showsTitle, appliedShown: appliedTemplate.showsTitle)
-        footerVisibility.stringValue = visibility(t.showsFooter, appliedShown: appliedTemplate.showsFooter)
+        let t = draftPresentation.template.applyingContentTemplate(for: session.draft)
+        let applied = appliedTemplate.applyingContentTemplate(for: session.draft)
+        titleVisibility.stringValue = visibility(t.showsTitle, appliedShown: applied.showsTitle)
+        footerVisibility.stringValue = visibility(t.showsFooter, appliedShown: applied.showsFooter)
         previewNote.stringValue = session.pending != nil || session.takingOutput ? "Publishing the text and design requested by your click. Later text edits remain private."
             : !designReady ? "Design is not ready to publish. Finish or correct the edit in Design."
             : designHasChanges ? "Includes your Design changes. Publish sends this text and design together."
@@ -327,6 +339,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         statusLabel.toolTip = statusLabel.stringValue
         if remote && status.connected {
             statusDetail.stringValue += "\n" + status.feedback.detail
+            if !status.templateDetail.isEmpty { statusDetail.stringValue += " " + status.templateDetail }
         }
         if !remote && !localOutputNotice.isEmpty { statusDetail.stringValue = localOutputNotice }
         statusDetail.toolTip = statusDetail.stringValue
@@ -338,9 +351,43 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     }
     func textDidChange(_ notification: Notification) { captureDraft() }
     @objc private func emptyRegionsChanged() { captureDraft() }
+    @objc private func templateChanged() {
+        session.draft.template = (templatePicker.selectedItem?.representedObject as? String).map(ContentTemplate.init(rawValue:))
+        captureDraft()
+    }
+    private func refreshTemplatePicker() {
+        let capabilities = remote ? session.status.templateCapabilities
+            : TemplateCapabilities(templates: TemplateDescriptor.builtIns, policy: draftPresentation.template.textTemplate.policy)
+        let entries = capabilities.templates ?? []
+        let unavailable = session.draft.template.flatMap { capabilities.supports($0) ? nil : $0 }
+        // Ordinary feedback and text editing must not rebuild an open menu.
+        if templateMenuEntries != entries || unavailableTemplate != unavailable {
+            templateMenuEntries = entries; unavailableTemplate = unavailable
+            templatePicker.removeAllItems()
+            templatePicker.addItem(withTitle: "Receiver’s layout")
+            for descriptor in entries {
+                templatePicker.menu?.addItem(NSMenuItem(title: descriptor.name, action: nil, keyEquivalent: ""))
+                templatePicker.lastItem?.representedObject = descriptor.id.rawValue
+            }
+            if let unavailable {
+                templatePicker.menu?.addItem(NSMenuItem(title: "\(unavailable.rawValue) · Unavailable", action: nil, keyEquivalent: ""))
+                templatePicker.lastItem?.representedObject = unavailable.rawValue
+                templatePicker.lastItem?.isEnabled = false
+            }
+        }
+        if let requested = session.draft.template,
+           let item = templatePicker.itemArray.first(where: { $0.representedObject as? String == requested.rawValue }) {
+            templatePicker.select(item)
+        } else { templatePicker.selectItem(at: 0) }
+        templatePicker.isEnabled = !remote || session.status.connected
+        let detail = capabilities.detail(requested: session.draft.template)
+        templateHint.stringValue = remote && !session.status.connected ? "Connect to discover the receiver’s templates."
+            : !detail.isEmpty ? detail : "Choose a template for this message. Changes apply when you publish."
+        templateHint.toolTip = templateHint.stringValue
+    }
     private func captureDraft() {
         session.draft = DisplayContent(title: titleField.stringValue, body: bodyEditor.string, footer: footerField.stringValue,
-                                       emptyRegions: reserveEmptyRegions.state == .on ? .reserve : .collapse)
+                                       emptyRegions: reserveEmptyRegions.state == .on ? .reserve : .collapse, template: session.draft.template)
         saveWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.saveDraft() }; saveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)

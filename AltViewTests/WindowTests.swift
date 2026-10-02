@@ -10,6 +10,180 @@ private final class LayoutTestWindow: NSWindow {
 }
 
 final class WindowTests: XCTestCase {
+    func testReceiverAdvertisesSavedPolicyAndOnlyBroadcastsAppliedChanges() throws {
+        let domain = "AltViewTests.TemplatePolicy.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        var saved = LowerThirdTemplate(); saved.textTemplate = .lyrics
+        try defaults.set(JSONEncoder().encode(saved), forKey: "lowerThirdTemplate")
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0)
+        var status = SenderStatus()
+        let sender = SenderClient(name: "Policy observer") { status = $0 }
+        defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("listener ready") { controller.receiverStatus.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
+        eventually("saved override in handshake") { status.connected && status.templateCapabilities.policy == .fixed(.lyrics) }
+        controller.showDesignPage()
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text template" })
+        selection.selectItem(withTitle: "Scripture"); selection.sendAction(selection.action, to: selection.target)
+        XCTAssertEqual(status.templateCapabilities.policy, .fixed(.lyrics), "A design draft is private")
+        try button("Apply Design to Output", in: root).performClick(nil)
+        eventually("applied override broadcast without publishing") { status.templateCapabilities.policy == .fixed(.scripture) }
+        XCTAssertNil(controller.receiverStatus.ownerID)
+        selection.selectItem(withTitle: "Custom layout"); selection.sendAction(selection.action, to: selection.target)
+        try button("Revert Changes", in: root).performClick(nil)
+        XCTAssertEqual(status.templateCapabilities.policy, .fixed(.scripture))
+    }
+
+    func testComposerDiscoversFutureTemplatesAndKeepsSelectionPrivateAcrossCatalogueChanges() throws {
+        let domain = "AltViewTests.TemplateMenu.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        try defaults.set(JSONEncoder().encode(DisplayContent(body: "Jordan Lee")), forKey: "customTextDraft")
+        let key = try PairingKey.generate()
+        let first = TemplateDescriptor(id: ContentTemplate(rawValue: "intro-one"), name: "Speaker")
+        let second = TemplateDescriptor(id: ContentTemplate(rawValue: "intro-two"), name: "Speaker")
+        let capabilities = TemplateCapabilities(templates: [first, second], policy: .sender)
+        let receiver = try TemplateTestReceiver(key: key, capabilities: capabilities)
+        let listening = expectation(description: "template menu receiver ready")
+        receiver.start { listening.fulfill() }
+        defer { receiver.stop() }
+        wait(for: [listening], timeout: 3)
+        var received: [DisplayContent] = []
+        receiver.onContent = { received.append($0) }
+        let controller = TextComposerViewController(defaults: defaults,
+            loadPairing: { _ in nil }, storePairing: { _, _ in }) { _ in XCTFail("Must connect remotely") }
+        let window = layoutWindow(); window.isReleasedWhenClosed = false; window.contentView = controller.view
+        defer { controller.shutdown(); window.close() }
+        let root = controller.view
+        let destination = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text destination" })
+        let picker = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Requested text template" })
+        destination.selectItem(at: 1); destination.sendAction(destination.action, to: destination.target)
+        XCTAssertFalse(picker.isEnabled)
+        let sheet = try XCTUnwrap(window.attachedSheet?.contentView)
+        try button("Connect using an address instead", in: sheet).performClick(nil)
+        try field("Receiver address", in: sheet).stringValue = "127.0.0.1"
+        try field("Receiver port", in: sheet).stringValue = String(try XCTUnwrap(receiver.port).rawValue)
+        let code = try field("Pairing code", in: sheet); code.stringValue = PairingKey.text(key)
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: code))
+        try button("Connect Only", in: sheet).performClick(nil)
+        eventually("discovered choices populated") { window.attachedSheet == nil && picker.isEnabled && picker.numberOfItems == 3 }
+        XCTAssertEqual(picker.itemTitles, ["Receiver’s layout", "Speaker", "Speaker"], "IDs, not display names, identify templates")
+        picker.selectItem(at: 2); picker.sendAction(picker.action, to: picker.target)
+        XCTAssertEqual(controller.draft.template, second.id)
+        XCTAssertTrue(received.isEmpty, "Choosing a template never takes output")
+        try button("Publish Text", in: root).performClick(nil)
+        eventually("chosen opaque ID published") { received.last?.template == second.id }
+        let selectedItem = picker.selectedItem
+        receiver.updateCapabilities(TemplateCapabilities(templates: [first, second], policy: .custom))
+        eventually("override feedback shown") {
+            self.descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("AltView overrides sender templates") }
+        }
+        XCTAssertTrue(picker.selectedItem === selectedItem, "Ordinary status updates must not rebuild the menu")
+        receiver.updateCapabilities(TemplateCapabilities(templates: [first], policy: .fixed(first.id)))
+        eventually("removed choice retained but unavailable") { picker.titleOfSelectedItem == "intro-two · Unavailable" }
+        XCTAssertFalse(try XCTUnwrap(picker.selectedItem).isEnabled)
+        XCTAssertEqual(controller.draft.template, second.id)
+        XCTAssertEqual(received.count, 1)
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("AltView uses Speaker for every message.") })
+        try button("Publish Text", in: root).performClick(nil)
+        eventually("unavailable request omitted on next publish") { received.count == 2 && received.last?.template == nil }
+        receiver.updateCapabilities(capabilities)
+        eventually("restored choice becomes selectable again") { picker.selectedItem?.representedObject as? String == second.id.rawValue && picker.selectedItem?.isEnabled == true }
+        XCTAssertEqual(controller.draft.template, second.id)
+    }
+
+    func testTemplateSamplesFitCompactWorkspaceAndComposerNotesMatchForcedLyrics() throws {
+        let domain = "AltViewTests.Templates.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defaults.set(true, forKey: "customTextEnabled")
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
+        window.setContentSize(NSSize(width: 980, height: 650))
+        controller.showDesignPage()
+        let samples = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Design preview content" })
+        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text template" })
+        for name in ["Scripture", "Lyrics"] {
+            samples.selectItem(withTitle: "Sample · \(name)"); samples.sendAction(samples.action, to: samples.target)
+            root.layoutSubtreeIfNeeded()
+            let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+            XCTAssertGreaterThan(preview.bounds.width, 400)
+            XCTAssertEqual(preview.bounds.width / preview.bounds.height, 16.0 / 9, accuracy: 0.01)
+            XCTAssertTrue(root.bounds.contains(selection.convert(selection.bounds, to: root)))
+            XCTAssertTrue(root.bounds.contains(try button("Apply Design to Output", in: root).convert(try button("Apply Design to Output", in: root).bounds, to: root)))
+            let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+            root.cacheDisplay(in: root.bounds, to: bitmap)
+            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            attachment.name = "Template-\(name)-compact"; attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        selection.selectItem(withTitle: "Lyrics"); selection.sendAction(selection.action, to: selection.target)
+        controller.showComposerPage()
+        XCTAssertEqual(descendants(root).compactMap { $0 as? NSTextField }.filter { $0.stringValue == "Hidden by Design · text is kept" }.count, 2)
+        controller.showDesignPage()
+        try button("Revert Changes", in: root).performClick(nil)
+    }
+
+    func testTextTemplatesPreviewApplyRevertAndPreserveCustomSettings() throws {
+        let controller = LowerThirdWindowController()
+        defer { controller.shutdown() }
+        var baseline = LowerThirdTemplate(); baseline.enabled = true; baseline.alignment = .right
+        baseline.showsTitle = false
+        var style = OutputStyle(); style.alignment = .right
+        controller.update(template: baseline, style: style, artwork: nil, busy: false, message: "")
+        let root = try XCTUnwrap(controller.window?.contentView)
+        func picker(_ name: String) throws -> NSPopUpButton {
+            try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == name })
+        }
+        let selection = try picker("Text template")
+        let samples = try picker("Design preview content")
+        let alignment = try picker("Lower third text alignment")
+        let title = try button("Title", in: root), footer = try button("Footer", in: root)
+        let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        var applied: LowerThirdTemplate?
+        controller.onApply = { value, _ in applied = value }
+        samples.selectItem(withTitle: "Lyrics"); samples.sendAction(samples.action, to: samples.target)
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Center")
+        XCTAssertFalse(alignment.isEnabled); XCTAssertFalse(title.isEnabled); XCTAssertFalse(footer.isEnabled)
+        XCTAssertEqual(title.state, .off); XCTAssertEqual(footer.state, .off)
+        XCTAssertEqual(preview.accessibilityLabel(), DisplayContent.lyrics.body)
+        XCTAssertFalse(controller.hasChanges, "Selecting a sample cannot edit the design")
+        selection.selectItem(withTitle: "Scripture"); selection.sendAction(selection.action, to: selection.target)
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Left")
+        XCTAssertEqual(title.state, .on); XCTAssertEqual(footer.state, .on)
+        XCTAssertNil(applied)
+        XCTAssertTrue(controller.hasChanges)
+        controller.revertChanges()
+        XCTAssertEqual(selection.titleOfSelectedItem, "From sending app")
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Center")
+        selection.selectItem(withTitle: "Lyrics"); selection.sendAction(selection.action, to: selection.target)
+        // Changes to other controls cannot save the preset over the custom rows/alignment.
+        try button("Artwork", in: root).performClick(nil)
+        controller.applyChanges()
+        XCTAssertEqual(applied?.textTemplate, .lyrics)
+        XCTAssertEqual(applied?.alignment, .right)
+        XCTAssertEqual(applied?.showsTitle, false); XCTAssertEqual(applied?.showsFooter, true)
+        selection.selectItem(withTitle: "Custom layout"); selection.sendAction(selection.action, to: selection.target)
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Right")
+        XCTAssertTrue(alignment.isEnabled); XCTAssertTrue(title.isEnabled); XCTAssertTrue(footer.isEnabled)
+        XCTAssertEqual(title.state, .off); XCTAssertEqual(footer.state, .on)
+        XCTAssertEqual(controller.style.alignment, .right)
+        controller.revertChanges()
+        XCTAssertEqual(selection.titleOfSelectedItem, "Lyrics")
+        // Source updates must refresh both the preview and the available controls.
+        selection.selectItem(withTitle: "From sending app"); selection.sendAction(selection.action, to: selection.target)
+        let scripture = DisplayContent(title: "Reference", body: "Verse", footer: "Translation", template: .scripture)
+        controller.updateContent(draft: .empty, source: scripture, externalSource: "ViewTheWord", customTextEnabled: false)
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Left")
+        XCTAssertEqual(preview.accessibilityLabel(), "Reference\nVerse\nTranslation")
+        controller.updateContent(draft: .empty, source: DisplayContent(body: "Custom"), externalSource: "ViewTheWord", customTextEnabled: false)
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Right")
+        XCTAssertTrue(alignment.isEnabled)
+    }
+
     func testOutputReadinessTracksPreviewSleepCloseAndMissingDisplay() throws {
         _ = NSApplication.shared
         let controller = OutputWindowController(presentation: CanvasPresentation())

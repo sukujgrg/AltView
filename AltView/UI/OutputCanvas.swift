@@ -23,6 +23,13 @@ struct OutputStyle: Codable, Equatable {
     var textAlignment: NSTextAlignment {
         switch alignment { case .left: return .left; case .center: return .center; case .right: return .right }
     }
+    func forDisplay(content: DisplayContent, template: LowerThirdTemplate) -> Self {
+        var result = self
+        if template.enabled || template.selectedContentTemplate(for: content) != nil {
+            result.alignment = template.applyingContentTemplate(for: content).alignment
+        }
+        return result
+    }
     func attributes(size: CGFloat, bold: Bool = true) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = textAlignment
@@ -46,6 +53,8 @@ struct CanvasTextLayout {
         return ceil(string.boundingRect(with: NSSize(width: width, height: 100_000), options: [.usesLineFragmentOrigin, .usesFontLeading]).height) + 2
     }
     static func make(content: DisplayContent, style: OutputStyle, template: LowerThirdTemplate = LowerThirdTemplate()) -> CanvasTextLayout {
+        let style = style.forDisplay(content: content, template: template)
+        let template = template.applyingContentTemplate(for: content)
         let content = template.contentForDisplay(content)
         let width: CGFloat = 1728
         let maximumHeight = 972 * CGFloat(min(0.9, max(0.15, style.heightFraction)))
@@ -177,8 +186,10 @@ final class OutputCanvas: NSView {
             }
             cachedImage?.draw(in: NSRect(x: 0, y: 0, width: 1920, height: 1080), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         } else {
-            let content = presentation.template.contentForDisplay(presentation.displayedContent)
-            drawText(content, layout: CanvasTextLayout.make(content: content, style: style, template: presentation.template), style: style)
+            let content = presentation.displayedContent
+            let textStyle = style.forDisplay(content: content, template: presentation.template)
+            drawText(presentation.template.contentForDisplay(content),
+                     layout: CanvasTextLayout.make(content: content, style: style, template: presentation.template), style: textStyle)
         }
     }
     /// Rasterize only when content/design changes. Animation frames move or clip
@@ -189,7 +200,7 @@ final class OutputCanvas: NSView {
         cg.translateBy(x: 0, y: 1080); cg.scaleBy(x: 1, y: -1)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
-        let template = presentation.template
+        let template = presentation.template.resolved(for: presentation.displayedContent)
         if template.showsArtwork && template.artwork == .builtIn {
             Self.drawBuiltInBanner(in: template.artworkRegion.rect)
         } else if template.showsArtwork, let artwork = presentation.artwork {

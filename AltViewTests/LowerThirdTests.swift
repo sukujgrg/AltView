@@ -5,6 +5,79 @@ import XCTest
 @testable import AltView
 
 final class LowerThirdTests: XCTestCase {
+    func testContentTemplatesMatchCustomLayoutPixelsAndRestoreSavedDesign() throws {
+        let scene = CanvasPresentation(), reference = CanvasPresentation()
+        let canvas = OutputCanvas(presentation: scene)
+        defer { scene.stopAnimation(); reference.stopAnimation() }
+        var style = OutputStyle(); style.alignment = .right; style.background = "00FF00"
+        var saved = LowerThirdTemplate(); saved.animation = .none; saved.alignment = .right
+        saved.showsTitle = false; saved.showsFooter = false
+        for lowerThird in [false, true] {
+            saved.enabled = lowerThird
+            // Switching presets on the same presentation must invalidate cached text.
+            for preset: ContentTemplate? in [.scripture, .lyrics, nil, .scripture] {
+                let content = DisplayContent(title: "PSALM 23:1", body: "The LORD is my shepherd", footer: "King James Version",
+                                             emptyRegions: .reserve, template: preset)
+                scene.update(content: content, style: style, template: saved, artwork: nil)
+                var expectedTemplate = saved; expectedTemplate.textTemplate = .custom
+                var expectedStyle = style
+                if let preset {
+                    expectedTemplate.showsTitle = preset == .scripture
+                    expectedTemplate.showsFooter = preset == .scripture
+                    expectedTemplate.alignment = preset == .scripture ? .left : .center
+                    expectedStyle.alignment = expectedTemplate.alignment
+                }
+                reference.update(content: content, style: expectedStyle, template: expectedTemplate, artwork: nil)
+                XCTAssertEqual(try render(scene), try render(reference))
+                XCTAssertEqual(scene.content, content)
+                XCTAssertEqual(scene.template, saved, "Presets must not overwrite the saved custom design")
+                XCTAssertEqual(scene.style, style)
+                XCTAssertEqual(canvas.accessibilityLabel(), preset == .scripture
+                    ? "PSALM 23:1\nThe LORD is my shepherd\nKing James Version" : "The LORD is my shepherd")
+                if preset == .lyrics {
+                    let resolved = saved.resolved(for: content)
+                    XCTAssertEqual(resolved.effectiveBodyRegion, TemplateRegion(x: 10, y: 74, width: 80, height: 20))
+                    XCTAssertEqual(Set(LowerThirdGuideLayout.make(template: resolved, in: NSRect(x: 0, y: 0, width: 1920, height: 1080)).map(\.index)), Set([0, 2]))
+                }
+            }
+        }
+    }
+
+    func testReceiverCanOverrideTemplatesAndDecodeOlderDesigns() throws {
+        var template = LowerThirdTemplate()
+        let content = DisplayContent(title: "Reference", body: "Text", footer: "Translation", template: .lyrics)
+        template.textTemplate = .scripture
+        XCTAssertEqual(template.selectedContentTemplate(for: content), .scripture)
+        XCTAssertEqual(template.contentForDisplay(content), content)
+        template.textTemplate = .lyrics
+        XCTAssertEqual(template.contentForDisplay(.scripture).title, "", "Forced templates also work for older senders")
+        template.textTemplate = .custom
+        XCTAssertNil(template.selectedContentTemplate(for: content))
+        XCTAssertEqual(template.contentForDisplay(content), content)
+        XCTAssertEqual(try JSONDecoder().decode(LowerThirdTemplate.self, from: JSONEncoder().encode(template)), template)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(template)) as? [String: Any])
+        legacy.removeValue(forKey: "textTemplate")
+        let restored = try JSONDecoder().decode(LowerThirdTemplate.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertEqual(restored.textTemplate, .sender)
+        XCTAssertEqual(restored.contentForDisplay(.scripture), .scripture, "Unmarked snapshots keep existing appearance")
+    }
+
+    func testHidingContentKeepsItsTemplateForTheExitAnimation() throws {
+        var now: TimeInterval = 10
+        let scene = CanvasPresentation(clock: { now }, reduceMotion: { false })
+        defer { scene.stopAnimation() }
+        var template = LowerThirdTemplate(); template.enabled = true; template.duration = 1
+        let lyrics = DisplayContent(title: "Hidden title", body: "Lyrics", footer: "Hidden footer", template: .lyrics)
+        scene.update(content: lyrics, style: OutputStyle(), template: template, artwork: nil, immediately: true)
+        let visible = try render(scene)
+        scene.update(content: .empty, style: OutputStyle(), template: template, artwork: nil)
+        XCTAssertEqual(try render(scene), visible)
+        XCTAssertEqual(scene.displayedContent.template, .lyrics)
+        now += 0.5
+        XCTAssertEqual(scene.progress, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(template.resolved(for: scene.displayedContent).alignment, .center)
+    }
+
     func testMotionReversesFromCurrentPositionAndDoesNotReplay() {
         var motion = LowerThirdMotion()
         motion.set(visible: true, at: 10, duration: 1, animated: true)

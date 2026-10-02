@@ -14,12 +14,94 @@ enum AltViewProtocol {
 
 enum EmptyRegionBehavior: String, Codable { case collapse, reserve }
 
+/// Stable, opaque IDs let senders select future receiver templates without an app update.
+struct ContentTemplate: RawRepresentable, Codable, Hashable, Sendable {
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+    static let scripture = Self(rawValue: "scripture")
+    static let lyrics = Self(rawValue: "lyrics")
+    static let builtIns: [Self] = [.scripture, .lyrics]
+    var name: String {
+        switch self { case .scripture: return "Scripture"; case .lyrics: return "Lyrics"; default: return rawValue }
+    }
+    var isValid: Bool {
+        (1...64).contains(rawValue.utf8.count) && rawValue.utf8.allSatisfy {
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || [45, 46, 95].contains($0)
+        }
+    }
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        self.init(rawValue: try value.decode(String.self))
+        guard isValid else { throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid template ID") }
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        try value.encode(rawValue)
+    }
+}
+
+struct TemplateDescriptor: Codable, Equatable, Sendable {
+    let id: ContentTemplate
+    let name: String
+    static let builtIns = ContentTemplate.builtIns.map { Self(id: $0, name: $0.name) }
+    var isValid: Bool { id.isValid && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 128 }
+}
+
+/// Receiver policy is independent of sender ownership and snapshot acceptance.
+struct TemplatePolicy: Codable, Equatable, Sendable {
+    enum Mode: String, Codable, Sendable { case sender, custom, fixed }
+    var mode: Mode
+    var template: ContentTemplate?
+    static let sender = Self(mode: .sender)
+    static let custom = Self(mode: .custom)
+    static func fixed(_ template: ContentTemplate) -> Self { Self(mode: .fixed, template: template) }
+}
+
+struct TemplateCapabilities: Equatable, Sendable {
+    // nil means discovery is unavailable (older receiver); [] means no templates.
+    var templates: [TemplateDescriptor]?
+    var policy: TemplatePolicy?
+    var isValid: Bool {
+        if let templates {
+            guard templates.count <= 64, templates.allSatisfy(\.isValid),
+                  Set(templates.map(\.id)).count == templates.count else { return false }
+        }
+        guard let policy else { return true }
+        guard templates != nil else { return false }
+        return policy.mode == .fixed ? policy.template.map(supports) == true : policy.template == nil
+    }
+    func supports(_ id: ContentTemplate) -> Bool { templates?.contains { $0.id == id } == true }
+    func contentForSending(_ content: DisplayContent) -> DisplayContent {
+        var result = content
+        if let id = content.template, !supports(id) { result.template = nil }
+        return result
+    }
+    func detail(requested: ContentTemplate?) -> String {
+        if let policy {
+            switch policy.mode {
+            case .custom: return "AltView overrides sender templates with its custom layout."
+            case .fixed:
+                let name = templates?.first { $0.id == policy.template }?.name ?? "a fixed template"
+                return "AltView uses \(name) for every message."
+            case .sender: break
+            }
+        }
+        guard let requested else { return "" }
+        guard templates != nil else { return "This receiver does not advertise templates; using its saved layout." }
+        guard let descriptor = templates?.first(where: { $0.id == requested }) else {
+            return "The requested template is unavailable; using AltView’s custom layout."
+        }
+        return "Requested template: \(descriptor.name)."
+    }
+}
+
 struct DisplayContent: Codable, Equatable {
     var title = ""
     var body = ""
     var footer = ""
     var visible = true
     var emptyRegions = EmptyRegionBehavior.collapse
+    var template: ContentTemplate?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -30,12 +112,12 @@ struct DisplayContent: Codable, Equatable {
     static let multilingual = DisplayContent(title: "MULTILINGUAL TEST", body: "സമാധാനം · Peace\nשלום · سلام\nஅமைதி · शांति", footer: "Check font fallback and line spacing")
 
     var isValid: Bool {
-        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024
+        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true)
     }
 }
 
 extension DisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -45,6 +127,7 @@ extension DisplayContent {
         footer = try values.decodeIfPresent(String.self, forKey: .footer) ?? ""
         visible = try values.decode(Bool.self, forKey: .visible)
         emptyRegions = try values.decodeIfPresent(EmptyRegionBehavior.self, forKey: .emptyRegions) ?? .collapse
+        template = try values.decodeIfPresent(ContentTemplate.self, forKey: .template)
     }
 }
 
@@ -66,6 +149,8 @@ struct WireMessage: Codable, Equatable {
     var ownerName: String?
     var detail: String?
     var outputReadiness: OutputReadiness?
+    var templates: [TemplateDescriptor]?
+    var templatePolicy: TemplatePolicy?
 }
 
 enum ProtocolFailure: Error, LocalizedError {

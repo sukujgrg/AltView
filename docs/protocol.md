@@ -2,7 +2,7 @@
 
 ## Roles
 
-The receiver owns the display style, selected display, window lifecycle, and active sender lease. A sender supplies a generic `DisplayContent` snapshot containing `title`, `body`, `footer`, and `visible`, with an optional `emptyRegions` spacing preference. `body` and `visible` are required; omitted or null title/footer values become empty strings. Content is plain text; no markup, file paths, media, HTML, or remote commands.
+The receiver owns the display style, selected display, window lifecycle, and active sender lease. A sender supplies a generic `DisplayContent` snapshot containing `title`, `body`, `footer`, and `visible`, with optional `emptyRegions` spacing and `template` layout preferences. `body` and `visible` are required; omitted or null title/footer values become empty strings. Content is plain text; no markup, file paths, media, HTML, or remote commands.
 
 `Core/ReceiverState.swift` is the pure ownership reducer. `ReceiverServer` confines it to a serial queue. `OutputCanvas` is shared by preview and output. The built-in Compose composer owns a `SenderClient` and is independent of ViewTheWord or eucaly. Automated tests exercise two simultaneous clients.
 
@@ -15,6 +15,7 @@ eucaly and ViewTheWord will run on a different Mac from the AltView receiver. Ea
 - Identify the app and sending Mac in the `hello` name so the receiver can show the current source, for example `ViewTheWord · Presentation Mac` or `eucaly · Presentation Mac`.
 - Keep the sender service independent of composer UI, projection views, and local display lifecycle. Loss of the AltView connection must not block the presentation app’s ordinary operation.
 - Keep appearance, lower-third artwork, and output-display selection on AltView. Both apps send generic content snapshots and follow the shared ownership/reconnection rules below.
+- After template discovery, ViewTheWord should default to `"scripture"` when advertised, with the reference in `title`, verse text in `body` and translation name in `footer`. eucaly should default to `"lyrics"` for song lyrics when advertised. Populate any template picker from the receiver catalogue, using IDs for selection and names for display. Include the selected, supported ID on every snapshot, including hidden snapshots and reconnect restoration; omit it for generic messages or when discovery/the requested ID is unavailable.
 
 Compose is an optional built-in sender for custom text and standalone validation. Receiver onboarding must describe the sending app generically, with Compose instructions presented only as an alternative.
 
@@ -55,13 +56,81 @@ Example state payload (framing header omitted):
 }
 ```
 
+### Content templates
+
+`content.template` optionally selects a stable ID advertised by the receiver. This receiver provides `"scripture"` and `"lyrics"`. Omitted or null means no sender template request, without retaining any previous snapshot's template. IDs contain 1–64 ASCII letters, digits, dots, underscores or hyphens; malformed IDs and non-string values are rejected. Well-formed IDs unknown to this receiver fall back to its custom layout, subject to any receiver override. This is an optional v2 extension; older receivers ignore fields they do not recognize. Senders must discover support before requesting a template.
+
+| Template | Alignment | Title | Body | Footer |
+| --- | --- | --- | --- | --- |
+| `scripture` | Left | Bible reference | Verse text | Translation name |
+| `lyrics` | Centre | Hidden | Lyrics | Hidden |
+
+The sender supplies the fields; the receiver does not parse references or identify templates from sender names. Scripture enables both label rows, which still collapse when empty unless `emptyRegions` is `"reserve"`. Lyrics hides both labels and reclaims their vertical space even with `"reserve"`. Hidden labels remain in the source snapshot. Templates affect text alignment and label visibility in both full-canvas and lower-third layouts, preserving receiver typography, colours, artwork, animation and saved geometry.
+
+Receiver **Design → Text template** defaults to **From sending app**. **Custom layout** ignores sender template requests and uses the saved alignment and visibility controls. **Scripture** and **Lyrics** force that preset for all messages, including senders that omit `template`. These choices are private drafts until Apply, persist with the design, and never overwrite the saved custom alignment or Title/Footer switches. The preview offers Scripture and Lyrics samples. The same resolution drives preview, output, fitting, guides and accessibility. Exits keep the last visible content's template until the animation finishes.
+
+Scripture content object:
+
+```json
+{"template":"scripture","title":"PSALM 23:1","body":"The LORD is my shepherd;\nI shall not want.","footer":"King James Version","visible":true}
+```
+
+Lyrics content object:
+
+```json
+{"template":"lyrics","body":"Amazing grace! How sweet the sound\nThat saved a wretch like me!","visible":true}
+```
+
+These objects belong inside the `content` field of a framed `state` message. Template requests follow the same ownership, lease and revision checks as text; connecting alone never changes the layout.
+
+### Template discovery and receiver overrides
+
+After authentication, `welcome.templates` supplies the receiver's ordered template catalogue as `{ "id": "…", "name": "…" }` entries. Treat IDs as opaque strings rather than a closed enum. Names are display labels, may repeat, and must never be used as identifiers. Catalogue limits are 64 entries, unique IDs, and nonblank names of at most 128 UTF-8 bytes. The existing 65,536-byte frame limit still applies. Invalid catalogues or policies close the connection.
+
+Example welcome (normal ownership fields omitted):
+
+```json
+{
+  "version": 2,
+  "kind": "welcome",
+  "receiverID": "F3465073-A824-4D86-BE4D-8E450117095A",
+  "templates": [
+    { "id": "scripture", "name": "Scripture" },
+    { "id": "lyrics", "name": "Lyrics" }
+  ],
+  "templatePolicy": { "mode": "sender" }
+}
+```
+
+`templatePolicy` describes the **applied** receiver setting:
+
+| Policy | Meaning |
+| --- | --- |
+| `{ "mode": "sender" }` | Honor supported sender requests; unmarked or unavailable IDs use the receiver's custom layout. |
+| `{ "mode": "custom" }` | Ignore sender requests and use the receiver's custom layout for every message. |
+| `{ "mode": "fixed", "template": "lyrics" }` | Force the advertised template with this ID for every message. |
+
+A fixed policy requires an ID present in `templates`. Other modes must omit `template`. A policy requires a catalogue; a catalogue without policy is allowed and means override status is unknown.
+
+Every `feedback` message repeats the complete catalogue and policy. Applying a different receiver policy sends feedback to all authenticated senders, including connected observers that do not own output. Editing or reverting a Design draft never advertises it. Catalogue/policy updates do not publish text, take ownership, or alter snapshot revision numbers. They use the existing single replaceable feedback slot, so status bursts remain bounded. Future receivers can update their catalogue through the same messages; this receiver's two built-in entries remain fixed for its running version.
+
+Sender behavior:
+
+1. Read discovery from `welcome` before publishing or restoring a snapshot. Replace it with each `feedback` report and refresh any template menu. Clear discovery on disconnect; use the next receiver's welcome when reconnecting.
+2. Missing/null `templates` means discovery is unavailable on an older receiver. An empty array means discovery is supported but no templates are offered. In either case, omit `content.template` when sending. Missing/null policy means override status is unknown.
+3. Select known defaults such as Scripture or Lyrics only if their IDs are advertised. Menus must also accept future IDs without needing an app update. Include a receiver-layout choice that omits the field.
+4. Retain the user's desired choice privately if it disappears. Mark it unavailable, omit it from subsequent snapshots, and explain the fallback. Do not publish text merely because discovery changes. Resolve the choice again before every send, including hide/show and reconnect restoration.
+5. Show receiver overrides separately from the requested choice. Preserve a supported request in the snapshot even while an override is active, so returning the receiver to sender mode can restore it.
+
+`SenderStatus.templateCapabilities` exposes the latest catalogue and policy. `contentForSending(_:)` strips unsupported requests from a copy, retaining the desired snapshot for reconnection. `templateDetail` reports overrides or fallback. The built-in Text composer populates its Template menu from the selected receiver and keeps changes private until Publish. These APIs and fields are available for the separate eucaly/ViewTheWord integrations; the receiver does not install changes into those apps.
+
 ### Empty title and footer space
 
 `content.emptyRegions` accepts `"collapse"` (default when omitted or null) or `"reserve"`. Unknown values are rejected. Empty, omitted, null, and whitespace-only title/footer fields count as unused. Each state is a complete snapshot: omitting a label clears the previous label rather than retaining it.
 
 - **Collapse:** Body reclaims unused title/footer space automatically. In a lower third, its vertical span extends into the unused boxes, retaining the saved body X and width. Full-screen text omits empty label rows and their gaps.
 - **Reserve:** Keep empty title/footer boxes in a lower third. Full-screen text reserves one line at the label’s font size and its normal gap for each empty label. This does not retain the previous label’s multiline height.
-- Receiver Design switches remain authoritative: a row explicitly hidden by `showsTitle` or `showsFooter` still gives its space to Body, even with `"reserve"`. The sender preference does not change saved geometry, artwork, fonts, or colours. When labels return, their saved boxes are used again.
+- With no active content template, receiver Design switches remain authoritative: a row explicitly hidden by `showsTitle` or `showsFooter` still gives its space to Body, even with `"reserve"`. Active templates determine row visibility as described above. The spacing preference does not change saved geometry, artwork, fonts, or colours. When labels return, their saved boxes are used again.
 
 Body-only content with automatic expansion:
 
@@ -75,21 +144,21 @@ The same content with empty spaces preserved:
 {"body":"Welcome everyone","visible":true,"emptyRegions":"reserve"}
 ```
 
-These are content objects inside a framed `state` message, not HTTP request bodies. Protocol v2 requires updating both sender and receiver; v1 connections are rejected. There is no capability negotiation or compatibility fallback.
+These are content objects inside a framed `state` message, not HTTP request bodies. Protocol v2 requires updating both sender and receiver; v1 connections are rejected. Template discovery is an optional extension within v2 and does not make v1 compatible.
 
 ## Handshake and ownership
 
 | Direction | Kind | Fields and effect |
 | --- | --- | --- |
 | Sender → receiver | `hello` | `senderID`, nonempty `name` (up to 128 UTF-8 bytes). Identify once per connection. |
-| Receiver → sender | `welcome` | `receiverID`, optional `ownerID` and `ownerName`. Connection is ready; no ownership is granted. |
+| Receiver → sender | `welcome` | `receiverID`, optional `ownerID` and `ownerName`, plus optional `templates` and `templatePolicy` discovery fields. Connection is ready; no ownership is granted. |
 | Sender → receiver | `take` | Explicitly take output. Generates a fresh lease and clears the old content. |
 | Sender → receiver | `resume` | Reconnect-only request. Grants a fresh lease only if output is unowned when processed. Otherwise returns current ownership. |
 | Receiver → sender | `granted` | New `lease`. Start revision numbering again and send a complete current state. |
 | Receiver → all | `ownership` | Optional `ownerID`, `ownerName`, and `lease`; absent owner fields mean unowned. |
 | Sender → receiver | `state` | `lease`, increasing `revision`, complete `content`. Apply only from the owning connection with the current lease. |
 | Sender → receiver | `release` | Current `lease`. Clears only that connection's own output and revokes ownership. |
-| Receiver → sender | `feedback` | Required `outputReadiness`; optional matching `lease` and positive `revision` acknowledge the latest accepted snapshot for this owning connection. |
+| Receiver → sender | `feedback` | Required `outputReadiness`; optional matching `lease` and positive `revision` acknowledge the latest accepted snapshot for this owning connection. Also carries the complete current `templates` and `templatePolicy` when discovery is supported. |
 | Both | `heartbeat` | Keeps liveness observable even while content is unchanged. |
 | Receiver → sender | `error` | Optional human-readable `detail`; the current receiver usually closes invalid sessions instead. |
 
@@ -132,7 +201,7 @@ The renderer uses an sRGB keying background, white text, native font fallback an
 
 ## Receiver-local lower thirds
 
-The wire protocol is version 2 and carries text with an optional empty-row spacing preference. `LowerThirdTemplate` is stored separately from `OutputStyle` under `lowerThirdTemplate`; absent settings leave the feature disabled, so existing style preferences decode unchanged. Artwork source, imported asset UUID/name, alignment, percentage rectangles and motion settings belong entirely to the receiver. Senders do not send artwork or wait for image processing. Receiver-local `showsArtwork`, `showsTitle` and `showsFooter` switches default to true when decoding older designs. Hiding artwork preserves its source, asset and rectangle while omitting it from rendering, guides and animation bounds; text geometry is unchanged. Rendering and accessibility filter disabled text without altering the sender snapshot. `resolved(for:)` also collapses unused label rows according to the content’s `emptyRegions` preference. `effectiveBodyRegion` extends the saved body’s vertical span to include the resolved hidden rows, preserving its X and width. Text fitting, rendering, preview guides and animation bounds use that effective region; the stored body rectangle stays unchanged so returning labels restore their layout. The editor’s numeric fields describe saved geometry and explicit Design switches; preview guides reflect the selected content’s actual boxes. Normal text output ignores the lower-third switches but honors `emptyRegions` in its own flowing layout.
+The wire protocol is version 2 and carries text with optional empty-row spacing and content-template preferences. `LowerThirdTemplate` is stored separately from `OutputStyle` under `lowerThirdTemplate`; absent settings leave the feature disabled, so existing style preferences decode unchanged. Artwork source, imported asset UUID/name, custom alignment, percentage rectangles and motion settings belong to the receiver. Its `textTemplate` choice defaults to `From sending app` when decoding older designs; recognized content templates resolve text alignment and label visibility without changing the stored custom values. Senders do not send artwork or wait for image processing. Receiver-local `showsArtwork`, `showsTitle` and `showsFooter` switches default to true when decoding older designs. Hiding artwork preserves its source, asset and rectangle while omitting it from rendering, guides and animation bounds; text geometry is unchanged. Rendering and accessibility filter disabled text without altering the sender snapshot. `resolved(for:)` selects the effective content template and then collapses unused label rows according to the content’s `emptyRegions` preference. `effectiveBodyRegion` extends the saved body’s vertical span to include the resolved hidden rows, preserving its X and width. Text fitting, rendering, preview guides and animation bounds use that effective region; the stored body rectangle stays unchanged so returning labels restore their layout. The editor’s numeric fields describe saved geometry and explicit Design switches; preview guides reflect the selected content’s actual boxes. Full-canvas output shares content-template selection and label visibility, and honors `emptyRegions` in its flowing layout.
 
 `PNGArtworkStore` reads bounded data, verifies ImageIO's PNG type/frame count/dimensions, decodes a thumbnail on its private queue, then atomically saves an app-owned UUID-named copy. The user-selected read-only sandbox entitlement and scoped access permit asynchronous import. Only app-owned superseded copies are removed; the user's original file is untouched. Completion tokens prevent stale imports/loads from replacing newer state. An unavailable selected custom asset suppresses the composition only while artwork is shown, and shows a reimport route with no silent branding fallback. Hidden artwork does not require its PNG to apply a design or publish text.
 

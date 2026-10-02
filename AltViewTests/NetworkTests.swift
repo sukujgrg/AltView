@@ -3,6 +3,105 @@ import Network
 @testable import AltView
 
 final class NetworkTests: XCTestCase {
+    func testTemplateCatalogueAndLiveOverridesReachOwnersAndConnectedObservers() throws {
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus(), aStatus = SenderStatus(), bStatus = SenderStatus()
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        server.updateTemplatePolicy(.fixed(.scripture))
+        server.start(name: "Templates", key: key, advertise: false)
+        let a = SenderClient(name: "Owner") { aStatus = $0 }
+        let b = SenderClient(name: "Observer") { bStatus = $0 }
+        defer { a.disconnect(); b.disconnect(); server.stop() }
+        eventually("listener") { output.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!)
+        a.connect(to: endpoint, key: key); b.connect(to: endpoint, key: key)
+        eventually("catalogue available without taking output") {
+            aStatus.connected && bStatus.connected && aStatus.templateCapabilities.policy == .fixed(.scripture)
+                && bStatus.templateCapabilities.templates == TemplateDescriptor.builtIns
+        }
+        XCTAssertNil(output.ownerID)
+        let content = DisplayContent(body: "Lyrics", template: .lyrics)
+        a.submit(content); a.takeOutput()
+        eventually("snapshot accepted") { output.content == content && aStatus.feedback.accepted }
+        let revision = aStatus.feedback.acceptedRevision
+        server.updateTemplatePolicy(.custom)
+        eventually("override broadcast to all senders") { aStatus.templateCapabilities.policy == .custom && bStatus.templateCapabilities.policy == .custom }
+        XCTAssertEqual(output.content, content)
+        XCTAssertEqual(output.ownerID, a.senderID)
+        XCTAssertEqual(aStatus.feedback.acceptedRevision, revision)
+        XCTAssertTrue(aStatus.templateDetail.contains("overrides"))
+        XCTAssertEqual(bStatus.feedback.acceptedRevision, 0)
+        server.updateTemplatePolicy(.sender)
+        eventually("sender choice enabled again") { aStatus.templateCapabilities.policy == .sender && bStatus.templateCapabilities.policy == .sender }
+        XCTAssertEqual(aStatus.feedback.sentRevision, revision, "Metadata updates must not republish text")
+        a.disconnect()
+        eventually("disconnect forgets discovery") { !aStatus.connected && aStatus.templateCapabilities.templates == nil }
+    }
+
+    func testFutureTemplateIDsRefreshAndFallbackAcrossReconnects() throws {
+        let key = try PairingKey.generate()
+        let future = TemplateDescriptor(id: ContentTemplate(rawValue: "speaker-intro"), name: "Speaker introduction")
+        let capabilities = TemplateCapabilities(templates: [future], policy: .sender)
+        let receiver = try TemplateTestReceiver(key: key, capabilities: capabilities)
+        let listening = expectation(description: "listener")
+        receiver.start { listening.fulfill() }
+        defer { receiver.stop() }
+        wait(for: [listening], timeout: 3)
+        var status = SenderStatus(), received: [DisplayContent] = []
+        receiver.onContent = { received.append($0) }
+        let sender = SenderClient(name: "Future-compatible sender") { status = $0 }
+        defer { sender.disconnect() }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: try XCTUnwrap(receiver.port)), key: key)
+        eventually("future ID discovered") { status.connected && status.templateCapabilities == capabilities }
+        let content = DisplayContent(title: "Speaker", body: "Jordan Lee", footer: "Host", template: future.id)
+        sender.submit(content); sender.takeOutput()
+        eventually("opaque ID sent unchanged") { received.last == content }
+        receiver.updateCapabilities(TemplateCapabilities(templates: [], policy: .sender))
+        eventually("catalogue removal received") { status.templateCapabilities.templates == [] }
+        XCTAssertEqual(received.count, 1, "Discovery updates must not publish anything")
+        var hidden = content; hidden.visible = false
+        sender.submit(hidden)
+        var unmarked = hidden; unmarked.template = nil
+        eventually("removed template omitted") { received.last == unmarked }
+        XCTAssertEqual(status.requestedTemplate, future.id, "Keep the desired choice for a future reconnect")
+        receiver.updateCapabilities(TemplateCapabilities(), reconnect: true)
+        eventually("disconnect clears old catalogue") { !status.connected && status.templateCapabilities.templates == nil }
+        eventually("older receiver reconnects and restores without template", timeout: 12) { status.ownsOutput && received.count == 3 }
+        XCTAssertEqual(received.last, unmarked)
+        XCTAssertNil(status.templateCapabilities.templates)
+        XCTAssertTrue(status.templateDetail.contains("does not advertise"))
+        receiver.updateCapabilities(capabilities, reconnect: true)
+        eventually("new catalogue restores originally requested ID", timeout: 12) { status.ownsOutput && received.count == 4 && received.last == hidden }
+        XCTAssertEqual(status.templateCapabilities, capabilities)
+    }
+
+    func testSenderTemplateChangesWithSnapshotsAndClearsWhenOmitted() throws {
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus(), status = SenderStatus()
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        let sender = SenderClient(name: "Template sender") { status = $0 }
+        server.start(name: "Templates", key: key, advertise: false)
+        defer { sender.disconnect(); server.stop() }
+        eventually("listener ready") { output.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
+        eventually("connected") { status.connected }
+        XCTAssertNil(output.ownerID, "Connecting alone does not apply a template")
+        let scripture = DisplayContent(title: "PSALM 23:1", body: "The LORD is my shepherd", footer: "King James Version", template: .scripture)
+        sender.submit(scripture); sender.takeOutput()
+        eventually("scripture accepted") { output.content == scripture && status.feedback.accepted }
+        let lyrics = DisplayContent(body: "Amazing grace", template: .lyrics)
+        sender.submit(lyrics)
+        eventually("lyrics accepted") { output.content == lyrics && status.feedback.accepted }
+        var hidden = lyrics; hidden.visible = false
+        sender.submit(hidden)
+        eventually("hidden snapshot keeps template") { output.content == hidden }
+        let generic = DisplayContent(body: "Announcement")
+        sender.submit(generic)
+        eventually("omitted template restores custom layout") { output.content == generic }
+        sender.releaseOutput()
+        eventually("release clears template and text") { output.ownerID == nil && output.content == .empty }
+    }
+
     func testDiscoveryExcludesThisMacByIdentity() throws {
         let localID = UUID(), remoteID = UUID()
         let discovery = ReceiverDiscovery(excludingReceiverID: localID) { _, _ in }
@@ -284,6 +383,59 @@ final class NetworkTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { settled.fulfill() }
         wait(for: [settled], timeout: 3)
         XCTAssertEqual(receiver.acceptedConnections, attempts)
+    }
+}
+
+/// A future or older v2 receiver for discovery interoperability tests.
+final class TemplateTestReceiver {
+    private let queue = DispatchQueue(label: "template-test-receiver")
+    private let listener: NWListener
+    private let receiverID = UUID()
+    private var capabilities: TemplateCapabilities
+    private var peer: PeerChannel?
+    var onContent: ((DisplayContent) -> Void)?
+    var port: NWEndpoint.Port? { listener.port }
+
+    init(key: Data, capabilities: TemplateCapabilities) throws {
+        self.capabilities = capabilities
+        listener = try NWListener(using: SecureConnection.parameters(key: key), on: .any)
+    }
+    func start(onReady: @escaping () -> Void) {
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { DispatchQueue.main.async(execute: onReady) }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            let peer = PeerChannel(connection: connection, queue: self.queue)
+            self.peer = peer
+            peer.onMessage = { [weak self, weak peer] message in
+                guard let self, let peer else { return }
+                switch message.kind {
+                case .hello:
+                    peer.send(WireMessage(kind: .welcome, receiverID: self.receiverID,
+                                          templates: self.capabilities.templates, templatePolicy: self.capabilities.policy))
+                case .take, .resume: peer.send(WireMessage(kind: .granted, lease: UUID()))
+                case .state:
+                    if let content = message.content { DispatchQueue.main.async { self.onContent?(content) } }
+                case .heartbeat: peer.send(WireMessage(kind: .heartbeat))
+                default: break
+                }
+            }
+            peer.start()
+        }
+        listener.start(queue: queue)
+    }
+    func updateCapabilities(_ capabilities: TemplateCapabilities, reconnect: Bool = false) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.capabilities = capabilities
+            if reconnect { self.peer?.close(nil); self.peer = nil }
+            else { self.peer?.send(WireMessage(kind: .feedback, outputReadiness: .closed,
+                                               templates: capabilities.templates, templatePolicy: capabilities.policy)) }
+        }
+    }
+    func stop() {
+        queue.sync { listener.cancel(); peer?.onMessage = nil; peer?.close(nil); peer = nil }
     }
 }
 

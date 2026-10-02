@@ -4,6 +4,18 @@ import CoreGraphics
 enum LowerThirdArtwork: String, Codable, CaseIterable { case builtIn = "Built-in banner", custom = "Imported PNG" }
 enum LowerThirdAnimation: String, Codable, CaseIterable { case none = "None", slide = "Slide", reveal = "Reveal" }
 
+enum TextTemplateSelection: String, Codable, CaseIterable {
+    case sender = "From sending app", custom = "Custom layout", scripture = "Scripture", lyrics = "Lyrics"
+    var policy: TemplatePolicy {
+        switch self {
+        case .sender: return .sender
+        case .custom: return .custom
+        case .scripture: return .fixed(.scripture)
+        case .lyrics: return .fixed(.lyrics)
+        }
+    }
+}
+
 /// Coordinates are percentages of a 1920 × 1080 canvas, measured from the top left.
 struct TemplateRegion: Codable, Equatable {
     var x: Double, y: Double, width: Double, height: Double
@@ -24,6 +36,7 @@ struct LowerThirdTemplate: Codable, Equatable {
     var animation = LowerThirdAnimation.slide
     var duration = 0.45
     var alignment = CanvasAlignment.left
+    var textTemplate = TextTemplateSelection.sender
     var showsArtwork = true
     var showsTitle = true
     var showsFooter = true
@@ -34,7 +47,7 @@ struct LowerThirdTemplate: Codable, Equatable {
 
     init() {}
     private enum CodingKeys: String, CodingKey {
-        case enabled, artwork, assetID, assetName, animation, duration, alignment
+        case enabled, artwork, assetID, assetName, animation, duration, alignment, textTemplate
         case showsArtwork, showsTitle, showsFooter, artworkRegion, titleRegion, bodyRegion, footerRegion
     }
     init(from decoder: Decoder) throws {
@@ -46,6 +59,7 @@ struct LowerThirdTemplate: Codable, Equatable {
         animation = try values.decode(LowerThirdAnimation.self, forKey: .animation)
         duration = try values.decode(Double.self, forKey: .duration)
         alignment = try values.decode(CanvasAlignment.self, forKey: .alignment)
+        textTemplate = try values.decodeIfPresent(TextTemplateSelection.self, forKey: .textTemplate) ?? .sender
         // Designs saved before these switches existed keep all areas on.
         showsArtwork = try values.decodeIfPresent(Bool.self, forKey: .showsArtwork) ?? true
         showsTitle = try values.decodeIfPresent(Bool.self, forKey: .showsTitle) ?? true
@@ -58,9 +72,29 @@ struct LowerThirdTemplate: Codable, Equatable {
 
     /// Filter for display without altering the sender's snapshot or saved boxes.
     func contentForDisplay(_ content: DisplayContent) -> DisplayContent {
+        let template = applyingContentTemplate(for: content)
         var result = content
-        if !showsTitle { result.title = "" }
-        if !showsFooter { result.footer = "" }
+        if !template.showsTitle { result.title = "" }
+        if !template.showsFooter { result.footer = "" }
+        return result
+    }
+
+    func selectedContentTemplate(for content: DisplayContent) -> ContentTemplate? {
+        switch textTemplate {
+        case .sender: return content.template.flatMap { ContentTemplate.builtIns.contains($0) ? $0 : nil }
+        case .custom: return nil
+        case .scripture: return .scripture
+        case .lyrics: return .lyrics
+        }
+    }
+
+    /// Resolve a preset without overwriting the receiver's custom alignment or rows.
+    func applyingContentTemplate(for content: DisplayContent) -> Self {
+        guard let preset = selectedContentTemplate(for: content) else { return self }
+        var result = self
+        result.alignment = preset == .scripture ? .left : .center
+        result.showsTitle = preset == .scripture
+        result.showsFooter = preset == .scripture
         return result
     }
 
@@ -79,10 +113,10 @@ struct LowerThirdTemplate: Codable, Equatable {
     /// Resolve the sender's empty-row preference without changing the saved design.
     /// Receiver-hidden rows still reclaim space even when empty rows are reserved.
     func resolved(for content: DisplayContent) -> Self {
-        guard content.emptyRegions == .collapse else { return self }
-        var result = self
-        result.showsTitle = showsTitle && content.hasTitle
-        result.showsFooter = showsFooter && content.hasFooter
+        var result = applyingContentTemplate(for: content)
+        guard content.emptyRegions == .collapse else { return result }
+        result.showsTitle = result.showsTitle && content.hasTitle
+        result.showsFooter = result.showsFooter && content.hasFooter
         return result
     }
 

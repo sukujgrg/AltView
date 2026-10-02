@@ -141,6 +141,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             editor.finishEditing()
             guard editor.canPublish else { self.showDesignPage(); return false }
             var snapshot = content; snapshot.visible = true
+            snapshot = TemplateCapabilities(templates: TemplateDescriptor.builtIns).contentForSending(snapshot)
             self.pendingLocalContent = snapshot
             editor.setPublishing(true)
             return true
@@ -526,10 +527,12 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         server.updateOutputReadiness(readiness)
     }
     private func refreshCanvas() {
+        server.updateTemplatePolicy(template.textTemplate.policy)
         var content = receiverStatus.content
         let unavailable = template.requiresCustomArtwork && artwork == nil
         if unavailable || receiverStatus.ownerName == nil { content = .empty }
-        let hasText = [content.title, content.body, content.footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let displayed = template.contentForDisplay(content)
+        let hasText = [displayed.title, displayed.body, displayed.footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if unavailable && receiverStatus.ownerName != nil { contentBadge.update("UNAVAILABLE", color: .systemOrange) }
         else if receiverStatus.ownerName != nil && !content.visible { contentBadge.update("HIDDEN", color: .systemOrange) }
         else if hasText && content.visible { contentBadge.update("TEXT VISIBLE", color: .systemGreen) }
@@ -544,7 +547,8 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         } else if content.visible && size < 28 {
             fitLabel.stringValue = "Text fits at \(Int(size)) pt. Use shorter content or enlarge its text area for better readability."
         } else {
-            fitLabel.stringValue = "16:9 canvas · White foreground · Key colour #\(style.background)"
+            let preset = template.selectedContentTemplate(for: content).map { "\($0.name) template · " } ?? ""
+            fitLabel.stringValue = "\(preset)16:9 canvas · White foreground · Key colour #\(style.background)"
         }
         composer?.updateLocalOutput(owner: receiverStatus.ownerName, ownerID: receiverStatus.ownerID, notice: unavailable ? fitLabel.stringValue : "")
         templateEditor?.update(template: template, style: style, artwork: artwork, busy: artworkBusy, message: artworkMessage)

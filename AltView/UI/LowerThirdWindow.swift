@@ -28,6 +28,8 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
     private let heightSlider = NSSlider(value: 80, minValue: 15, maxValue: 90, target: nil, action: nil)
     private let positionPicker = NSPopUpButton()
     private let fullAlignmentPicker = NSPopUpButton()
+    private let textTemplatePicker = NSPopUpButton()
+    private let textTemplateHint = UI.label("", size: 11, color: .secondaryLabelColor)
     private var fullLayout: NSView!
     private var lowerAlignment: NSView!
     private var artworkSection: NSView!
@@ -54,7 +56,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             usesRealContent = true
             samplePicker.removeAllItems()
             samplePicker.addItems(withTitles: (customTextEnabled ? ["Text draft"] : [])
-                + ["Current source", "Sample · Speaker", "Sample · Announcement", "Sample · Long message"])
+                + ["Current source", "Sample · Speaker", "Sample · Announcement", "Sample · Long message", "Sample · Scripture", "Sample · Lyrics"])
             samplePicker.selectItem(withTitle: selection.flatMap { samplePicker.item(withTitle: $0)?.title }
                 ?? (externalSource == nil ? fallback : "Current source"))
         }
@@ -63,7 +65,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         if externalSource == nil && samplePicker.titleOfSelectedItem == "Current source" { samplePicker.selectItem(withTitle: fallback) }
         editTextButton.isHidden = !customTextEnabled
         editTextButton.title = externalSource == nil ? "Edit Text…" : "Open Text Draft…"
-        refreshPreview()
+        refresh()
     }
     private(set) var template = LowerThirdTemplate()
     private var appliedTemplate = LowerThirdTemplate()
@@ -170,6 +172,10 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         positionPicker.setAccessibilityLabel("Draft vertical position")
         fullAlignmentPicker.addItems(withTitles: CanvasAlignment.allCases.map(\.rawValue))
         fullAlignmentPicker.setAccessibilityLabel("Draft text alignment")
+        textTemplatePicker.addItems(withTitles: TextTemplateSelection.allCases.map(\.rawValue))
+        textTemplatePicker.setAccessibilityLabel("Text template")
+        textTemplatePicker.target = self; textTemplatePicker.action = #selector(textTemplateChanged)
+        textTemplateHint.maximumNumberOfLines = 0
         sizeSlider.setAccessibilityLabel("Draft font size")
         heightSlider.setAccessibilityLabel("Draft maximum content height")
         for control: NSControl in [backgroundPicker, colorWell, fontPicker, sizeSlider, heightSlider, positionPicker, fullAlignmentPicker] {
@@ -218,11 +224,12 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         resetLayoutRow = UI.row(reset, NSView())
         let layout = UI.card("Layout", content: UI.column(grid, bodyLayoutHint,
             artworkSizing, resetLayoutRow, spacing: 10))
-        let inspector = UI.scrolling(UI.column(composition, typography, artworkSection, animationSection, layout, spacing: 12))
+        let textTemplates = UI.card("Text template", content: UI.column(textTemplatePicker, textTemplateHint, spacing: 8))
+        let inspector = UI.scrolling(UI.column(textTemplates, composition, typography, artworkSection, animationSection, layout, spacing: 12))
         inspector.widthAnchor.constraint(equalToConstant: 340).isActive = true
         inspector.setAccessibilityLabel("Design inspector")
 
-        samplePicker.addItems(withTitles: ["Speaker", "Announcement", "Long message"])
+        samplePicker.addItems(withTitles: ["Speaker", "Announcement", "Long message", "Scripture", "Lyrics"])
         samplePicker.target = self; samplePicker.action = #selector(previewChanged)
         samplePicker.setAccessibilityLabel("Design preview content"); samplePicker.autoenablesItems = false
         samplePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -304,7 +311,9 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             style.fontSize = sizeSlider.doubleValue.rounded()
             style.heightFraction = heightSlider.doubleValue.rounded() / 100
             style.position = CanvasPosition(rawValue: positionPicker.titleOfSelectedItem ?? "") ?? .center
-            style.alignment = CanvasAlignment(rawValue: fullAlignmentPicker.titleOfSelectedItem ?? "") ?? .center
+            if template.selectedContentTemplate(for: previewContent) == nil {
+                style.alignment = CanvasAlignment(rawValue: fullAlignmentPicker.titleOfSelectedItem ?? "") ?? .center
+            }
         }
         refresh()
     }
@@ -315,13 +324,24 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             view.subviews.forEach(enable)
         }
         if let editorRoot { enable(editorRoot) }
+        let layoutTemplate = template.applyingContentTemplate(for: previewContent)
+        let preset = template.selectedContentTemplate(for: previewContent)
+        textTemplatePicker.selectItem(withTitle: template.textTemplate.rawValue)
+        textTemplateHint.stringValue = preset.map {
+            ($0 == .scripture ? "Scripture: left aligned, with reference above and translation below."
+                : "Lyrics: centred body text, with no title or footer.")
+            + " Choose Custom layout to edit alignment and title/footer visibility."
+        } ?? (template.textTemplate == .sender
+            ? "Sending apps can request Scripture or Lyrics for each message. Text without a request uses your custom layout."
+            : "Use your alignment and title/footer settings for every message.")
         backgroundPicker.selectItem(at: customBackgroundSelected ? 3 : (["000000", "00FF00", "0000FF"].firstIndex(of: style.background) ?? 3))
         colorWell.color = style.backgroundColor; colorWell.isEnabled = backgroundPicker.indexOfSelectedItem == 3
         fontPicker.selectItem(withTitle: style.fontName == "AvenirNext-Regular" ? "Avenir Next" : style.fontName)
         sizeSlider.doubleValue = style.fontSize; sizeLabel.stringValue = "\(Int(style.fontSize)) pt"
         heightSlider.doubleValue = style.heightFraction * 100
         positionPicker.selectItem(withTitle: style.position.rawValue)
-        fullAlignmentPicker.selectItem(withTitle: style.alignment.rawValue)
+        fullAlignmentPicker.selectItem(withTitle: (preset == nil ? style.alignment : layoutTemplate.alignment).rawValue)
+        fullAlignmentPicker.isEnabled = preset == nil
         fullLayout?.isHidden = template.enabled
         lowerAlignment?.isHidden = !template.enabled
         artworkSection.isHidden = !template.enabled
@@ -337,8 +357,9 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             : "Text uses the full canvas. Enable this to place it in the lower-third area."
         enabled.state = template.enabled ? .on : .off
         showArtwork.state = template.showsArtwork ? .on : .off
-        showTitle.state = template.showsTitle ? .on : .off
-        showFooter.state = template.showsFooter ? .on : .off
+        showTitle.state = layoutTemplate.showsTitle ? .on : .off
+        showFooter.state = layoutTemplate.showsFooter ? .on : .off
+        showTitle.isEnabled = preset == nil; showFooter.isEnabled = preset == nil
         artworkPicker.selectItem(withTitle: template.artwork.rawValue)
         artworkPicker.item(withTitle: LowerThirdArtwork.custom.rawValue)?.isEnabled = artwork != nil || template.artwork == .custom
         chooseButton.isEnabled = !importing && !loading
@@ -358,7 +379,8 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         else { status.stringValue = "Import a transparent PNG up to 20 MB. AltView saves its own copy." }
         status.textColor = unavailable && !loading || artworkMessage.hasPrefix("Import failed") ? .systemOrange : .secondaryLabelColor
         animationPicker.selectItem(withTitle: template.animation.rawValue)
-        alignmentPicker.selectItem(withTitle: template.alignment.rawValue)
+        alignmentPicker.selectItem(withTitle: layoutTemplate.alignment.rawValue)
+        alignmentPicker.isEnabled = preset == nil
         let hadInvalidFields = !invalidFields.isEmpty
         duration.isEnabled = template.enabled && template.animation != .none
         if !duration.isEnabled {
@@ -366,11 +388,11 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         }
         if !isEditing(duration) && !invalidFields.contains(ObjectIdentifier(duration)) { duration.stringValue = String(format: "%.2f", template.duration) }
         for (index, key) in regions.enumerated() {
-            let region = index == 2 ? template.effectiveBodyRegion : template[keyPath: key]
+            let region = index == 2 ? layoutTemplate.effectiveBodyRegion : template[keyPath: key]
             let values = [region.x, region.y, region.width, region.height]
-            let active = template.enabled && (index != 0 || template.showsArtwork) && (index != 1 || template.showsTitle) && (index != 3 || template.showsFooter)
+            let active = template.enabled && (index != 0 || template.showsArtwork) && (index != 1 || layoutTemplate.showsTitle) && (index != 3 || layoutTemplate.showsFooter)
             for (component, field) in regionFields[index].enumerated() {
-                let automatic = index == 2 && template.bodyExpandsAutomatically && (component == 1 || component == 3)
+                let automatic = index == 2 && layoutTemplate.bodyExpandsAutomatically && (component == 1 || component == 3)
                 field.isEnabled = active && !automatic
                 if !field.isEnabled {
                     invalidFields.remove(ObjectIdentifier(field)); field.textColor = .labelColor
@@ -386,9 +408,11 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             }
         }
         if hadInvalidFields && invalidFields.isEmpty { validationMessage = "" }
-        bodyLayoutHint.stringValue = !template.enabled
+        bodyLayoutHint.stringValue = preset != nil
+            ? "The text template controls alignment and visible rows. Choose Custom layout to change these."
+            : !template.enabled
             ? "Show or hide Title and Footer. Body uses the available space; set its position in Canvas."
-            : template.bodyExpandsAutomatically
+            : layoutTemplate.bodyExpandsAutomatically
             ? "Body fills the hidden rows. Its Y and height are automatic; enable Title and Footer to edit the base values."
             : "These are the saved boxes. Body also uses empty Title/Footer space unless the sender keeps it reserved; guides show the preview’s actual boxes."
         refreshPreview()
@@ -403,29 +427,36 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         }
         onDraftChange?()
     }
-    private func refreshPreview() {
+    private var previewContent: DisplayContent {
         let samples = [
             DisplayContent(title: "GUEST SPEAKER", body: "Jordan Lee", footer: "Community coordinator"),
             DisplayContent(title: "WELCOME", body: "A place to belong", footer: "Sundays · 10 am"),
-            DisplayContent(title: "COMING UP", body: "Join us after the service for morning tea and a chance to meet the community.", footer: "Everyone is welcome · Main hall")
+            DisplayContent(title: "COMING UP", body: "Join us after the service for morning tea and a chance to meet the community.", footer: "Everyone is welcome · Main hall"),
+            DisplayContent(title: DisplayContent.scripture.title, body: DisplayContent.scripture.body,
+                           footer: DisplayContent.scripture.footer, template: .scripture),
+            DisplayContent(title: DisplayContent.lyrics.title, body: DisplayContent.lyrics.body,
+                           footer: DisplayContent.lyrics.footer, template: .lyrics)
         ]
+        let selection = samplePicker.titleOfSelectedItem
+        if !usesRealContent { return samples[min(samples.count - 1, max(0, samplePicker.indexOfSelectedItem))] }
+        switch selection {
+        case "Text draft": return draftContent
+        case "Current source": return sourceContent
+        case "Sample · Announcement": return samples[1]
+        case "Sample · Long message": return samples[2]
+        case "Sample · Scripture": return samples[3]
+        case "Sample · Lyrics": return samples[4]
+        default: return samples[0]
+        }
+    }
+    private func refreshPreview() {
         let selection = samplePicker.titleOfSelectedItem
         sourceHint.stringValue = sourceName.map {
             "Source: \($0). Edit its text in that app." + (customTextEnabled ? " Text has its own separate draft." : "")
         } ?? (selection == "Text draft" ? "Previewing your Text draft. Edit in Text, then publish when ready."
             : "Use sample text to preview your design. Live text comes from your sending app.")
         sourceHint.toolTip = sourceHint.stringValue
-        var sample: DisplayContent
-        if !usesRealContent { sample = samples[min(2, max(0, samplePicker.indexOfSelectedItem))] }
-        else {
-            switch selection {
-            case "Text draft": sample = draftContent
-            case "Current source": sample = sourceContent
-            case "Sample · Announcement": sample = samples[1]
-            case "Sample · Long message": sample = samples[2]
-            default: sample = samples[0]
-            }
-        }
+        var sample = previewContent
         let previewTemplate = template
         sample.visible = (!previewTemplate.requiresCustomArtwork || artwork != nil) && [sample.title, sample.body, sample.footer].contains { !$0.isEmpty }
         previewHeading.stringValue = usesRealContent && (selection == "Text draft" || selection == "Current source")
@@ -480,11 +511,15 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         let artworkChoice = LowerThirdArtwork(rawValue: artworkPicker.titleOfSelectedItem ?? "") ?? .builtIn
         let motionChoice = LowerThirdAnimation(rawValue: animationPicker.titleOfSelectedItem ?? "") ?? .slide
         let alignmentChoice = CanvasAlignment(rawValue: alignmentPicker.titleOfSelectedItem ?? "") ?? .left
+        let usesCustomLayout = template.selectedContentTemplate(for: previewContent) == nil
         hostWindow?.makeFirstResponder(nil)
         var next = template
         next.enabled = useLowerThird; next.artwork = artworkChoice
         next.showsArtwork = artworkVisible
-        next.showsTitle = titleVisible; next.showsFooter = footerVisible
+        if usesCustomLayout {
+            next.showsTitle = titleVisible; next.showsFooter = footerVisible
+            next.alignment = alignmentChoice
+        }
         // A hidden area's disabled fields must not keep Apply blocked.
         for (index, visible) in [(0, artworkVisible), (1, titleVisible), (3, footerVisible)] where !visible {
             for field in regionFields[index] {
@@ -493,7 +528,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             }
         }
         if invalidFields.isEmpty { validationMessage = "" }
-        next.animation = motionChoice; next.alignment = alignmentChoice
+        next.animation = motionChoice
         if motionChoice == .none {
             // An unused duration must not leave Apply blocked by a disabled field.
             invalidFields.remove(ObjectIdentifier(duration)); duration.textColor = .labelColor
@@ -502,7 +537,14 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         }
         commit(next)
     }
-    @objc private func previewChanged() { refreshPreview() }
+    @objc private func textTemplateChanged() {
+        guard !publishing else { return }
+        let selection = TextTemplateSelection(rawValue: textTemplatePicker.titleOfSelectedItem ?? "") ?? .sender
+        hostWindow?.makeFirstResponder(nil)
+        var next = template; next.textTemplate = selection
+        commit(next)
+    }
+    @objc private func previewChanged() { refresh() }
     @objc private func editText() {
         guard customTextEnabled else { return }
         hostWindow?.makeFirstResponder(nil)
@@ -530,7 +572,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         if field === duration { return String(format: "%.2f", template.duration) }
         for (index, fields) in regionFields.enumerated() {
             if let component = fields.firstIndex(where: { $0 === field }) {
-                let r = index == 2 ? template.effectiveBodyRegion : template[keyPath: regions[index]]
+                let r = index == 2 ? template.applyingContentTemplate(for: previewContent).effectiveBodyRegion : template[keyPath: regions[index]]
                 return String(format: "%g", [r.x, r.y, r.width, r.height][component])
             }
         }

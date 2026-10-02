@@ -1,5 +1,20 @@
 # Standalone validation
 
+## Template discovery — 3 October 2026
+
+- AltView now advertises `templates` and `templatePolicy` in its welcome and feedback messages. Sender status exposes the catalogue and applied override. IDs are extensible strings; older receivers and unavailable choices receive unmarked text, while the desired choice is retained for reconnects.
+- The full 114-test suite passed in `build/TemplateDiscovery.xcresult`. Two additional integration checks passed in `build/TemplateDiscoveryUI.xcresult`; after preventing routine feedback from rebuilding an open menu, all 36 window tests passed in `build/TemplateDiscoveryWindowsVerified.xcresult` (116 distinct tests across the full and final window runs).
+- Encrypted checks cover future IDs, live catalogue removal, legacy reconnect fallback, restoring a desired ID when it returns, policy broadcasts to owners and observers, and unchanged snapshot ownership/revisions. UI checks cover the discovered Template menu, duplicate display names with distinct IDs, unavailable selections, private choice changes, saved receiver policy, and Apply/Revert without publication. Catalogue bounds and malformed policies are validated separately.
+- Manual integration: connect eucaly/ViewTheWord with their discovery adapters, verify the returned choices, choose a template and publish. Apply each receiver override while connected and confirm its status appears in the sender; editing/reverting a draft must remain private. Reconnect to an older receiver and confirm ordinary text is still sent. These adapters and physical two-Mac/HDMI checks are outside this receiver implementation.
+
+## Content templates — 3 October 2026
+
+- Added optional `content.template` requests for Scripture and Lyrics, plus receiver choices in Design: From sending app, Custom layout, Scripture and Lyrics. Existing unmarked messages retain their custom layout. Forced presets preserve custom alignment and Title/Footer switches.
+- The full 108-test suite passed in `build/ContentTemplates.xcresult`. After correcting Composer's visibility notes for forced templates and adding a compact-workspace check, all 34 window tests passed in `build/ContentTemplateWindows.xcresult` (109 distinct tests across the two runs).
+- Coverage includes framed JSON defaults and validation, real encrypted template changes/blank/release, pixel comparisons in both rendering modes, returning to an unmarked message, empty-row reservation, accessibility, guides, exit animation, old-design decoding, Apply/Revert and preserving custom settings. Compact workspace assertions verify the 16:9 preview and template/apply controls fit at 980 × 650.
+- Manual integration check: publish a Scripture snapshot with reference/verse/translation, then Lyrics, then an unmarked announcement. Confirm the first is left aligned with labels, the second is centred without labels, and the announcement returns to the saved custom layout. Repeat with lower thirds enabled and `emptyRegions: "reserve"`.
+- Check each receiver override, Apply, restart and confirm it persists. Choose Custom layout to restore editable alignment and label switches. Selecting preview samples must never publish them. Sender app changes and physical two-Mac/HDMI validation remain separate from these receiver tests.
+
 ## Snapshot feedback — 2 October 2026
 
 Protocol v2 requires both apps to be updated. Feedback reports receiver snapshot acceptance and software output readiness; it does not certify rendered frames or physical HDMI delivery.

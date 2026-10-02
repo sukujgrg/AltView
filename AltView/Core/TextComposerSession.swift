@@ -34,7 +34,7 @@ final class TextComposerSession {
     var hasUnpublishedChanges: Bool {
         guard let submitted else { return hasText }
         return draft.title != submitted.title || draft.body != submitted.body || draft.footer != submitted.footer
-            || draft.emptyRegions != submitted.emptyRegions
+            || draft.emptyRegions != submitted.emptyRegions || draft.template != submitted.template
     }
     var primaryTitle: String { "Publish Text" }
 

@@ -10,6 +10,9 @@ struct SenderStatus: Equatable {
     var message = "Not connected"
     var failureReason: String?
     var feedback = DeliveryFeedback()
+    var templateCapabilities = TemplateCapabilities()
+    var requestedTemplate: ContentTemplate?
+    var templateDetail: String { templateCapabilities.detail(requested: requestedTemplate) }
 }
 
 /// No network operation or serialization runs on the caller's UI thread.
@@ -35,6 +38,7 @@ final class SenderClient {
     private lazy var submissions = SnapshotMailbox<DisplayContent>(queue: queue) { [weak self] content in
         guard let self else { return }
         self.latest = content
+        self.status.requestedTemplate = content.template
         self.sendLatest()
     }
 
@@ -125,6 +129,7 @@ final class SenderClient {
             self.peer = nil; self.lease = nil
             self.status.connected = false; self.status.ownsOutput = false
             self.status.feedback = DeliveryFeedback()
+            self.status.templateCapabilities = TemplateCapabilities()
             self.timer?.cancel(); self.timer = nil
             if let deadline = self.initialConnectionDeadline {
                 if self.wantsConnection, peer.retryableSetupFailure, ProcessInfo.processInfo.systemUptime < deadline {
@@ -159,6 +164,8 @@ final class SenderClient {
         switch message.kind {
         case .welcome:
             guard !status.connected, let receiverID = message.receiverID else { peer?.close("Invalid welcome."); return }
+            let capabilities = TemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
+            guard capabilities.isValid else { peer?.close("Invalid template catalogue."); return }
             if let expectedReceiverID, expectedReceiverID != receiverID {
                 wantsConnection = false
                 peer?.close("Receiver identity changed. Pair again.")
@@ -167,6 +174,8 @@ final class SenderClient {
                 return
             }
             status.feedback = DeliveryFeedback()
+            status.templateCapabilities = capabilities
+            status.requestedTemplate = latest.template
             expectedReceiverID = receiverID
             initialConnectionDeadline = nil
             attempts = 0; status.connected = true; status.receiverID = receiverID
@@ -196,6 +205,9 @@ final class SenderClient {
                   (message.lease == nil && message.revision == nil) || (message.lease != nil && message.revision.map { $0 > 0 } == true) else {
                 peer?.close("Unexpected output feedback."); return
             }
+            let capabilities = TemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
+            guard capabilities.isValid else { peer?.close("Invalid template catalogue."); return }
+            status.templateCapabilities = capabilities
             status.feedback.receive(message, lease: lease, now: ProcessInfo.processInfo.systemUptime)
             publish()
         case .heartbeat: break
@@ -209,7 +221,8 @@ final class SenderClient {
         guard revision < UInt64.max else { peer?.close("Session revision exhausted."); return }
         revision += 1
         status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
-        peer?.send(WireMessage(kind: .state, lease: lease, revision: revision, content: latest))
+        peer?.send(WireMessage(kind: .state, lease: lease, revision: revision,
+                              content: status.templateCapabilities.contentForSending(latest)))
         publish()
     }
     private func scheduleReconnect() {

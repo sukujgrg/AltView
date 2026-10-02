@@ -18,6 +18,7 @@ final class ReceiverServer {
     private var listener: NWListener?
     private var peers: [UUID: PeerChannel] = [:]
     private var outputReadiness = OutputReadiness.closed
+    private var templatePolicy = TemplatePolicy.sender
     private var state = ReceiverState()
     private var status = ReceiverStatus()
     private var timer: DispatchSourceTimer?
@@ -81,6 +82,14 @@ final class ReceiverServer {
             self.broadcastFeedback()
         }
     }
+    func updateTemplatePolicy(_ policy: TemplatePolicy) {
+        queue.async { [weak self] in
+            guard let self, self.templatePolicy != policy,
+                  TemplateCapabilities(templates: TemplateDescriptor.builtIns, policy: policy).isValid else { return }
+            self.templatePolicy = policy
+            self.broadcastFeedback()
+        }
+    }
     func stop() { queue.async { [weak self] in self?.stopOnQueue(); self?.publish() } }
     func clearOutput() {
         queue.async { [weak self] in
@@ -131,7 +140,8 @@ final class ReceiverServer {
             guard let id = message.senderID, let name = message.name, state.register(connection: peer.id, senderID: id, name: name) else {
                 peer.close("Invalid sender identity."); return
             }
-            peer.send(WireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name))
+            peer.send(WireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name,
+                                 templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy))
             sendFeedback(to: peer)
             publish()
             return
@@ -176,7 +186,8 @@ final class ReceiverServer {
         guard state.senders[peer.id] != nil else { return }
         let hasSnapshot = state.ownerConnection == peer.id && state.revision > 0
         peer.send(WireMessage(kind: .feedback, lease: hasSnapshot ? state.lease : nil,
-                              revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness))
+                              revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness,
+                              templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy))
     }
     private func publish() {
         status.connections = state.senders.count

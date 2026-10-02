@@ -2,6 +2,19 @@ import XCTest
 @testable import AltView
 
 final class TextComposerTests: XCTestCase {
+    func testTemplateChoiceStaysPrivateAndHideKeepsThePublishedTemplate() {
+        let sender = Sender()
+        let composer = TextComposerSession(sender: sender, draft: DisplayContent(body: "Text", template: .scripture))
+        composer.receive(SenderStatus(connected: true, ownsOutput: true))
+        composer.show()
+        composer.draft.template = .lyrics
+        XCTAssertTrue(composer.hasUnpublishedChanges)
+        composer.hide(); composer.showSubmitted()
+        XCTAssertEqual(sender.snapshots.last?.template, .scripture)
+        composer.show()
+        XCTAssertEqual(sender.snapshots.last?.template, .lyrics)
+        XCTAssertFalse(composer.hasUnpublishedChanges)
+    }
     private final class Sender: TextSending {
         var snapshots: [DisplayContent] = []
         var takes = 0, releases = 0, disconnects = 0
