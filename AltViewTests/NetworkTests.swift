@@ -1,8 +1,155 @@
 import XCTest
 import Network
+import Darwin
 @testable import AltView
 
 final class NetworkTests: XCTestCase {
+    func testEndpointUpdateKeepsSessionGuardsAndDoesNotStealOccupiedOutput() throws {
+        let receiverID = UUID(), key = try PairingKey.generate(), connectionID = UUID()
+        var originalOutput = ReceiverStatus(), movedOutput = ReceiverStatus()
+        var status = SenderStatus(), otherStatus = SenderStatus()
+        let original = ReceiverServer(receiverID: receiverID) { originalOutput = $0 }
+        let moved = ReceiverServer(receiverID: receiverID) { movedOutput = $0 }
+        let sender = SenderClient(name: "Local composer") { status = $0 }
+        let other = SenderClient(name: "Other sender") { otherStatus = $0 }
+        defer { sender.disconnect(); other.disconnect(); original.stop(); moved.stop() }
+        // Keep both listeners alive to force different ports and exercise an
+        // address update before the old transport reports disconnection.
+        original.start(name: "Original", key: key, advertise: false)
+        moved.start(name: "Moved", key: key, advertise: false)
+        eventually("both listeners ready") { originalOutput.listening && movedOutput.listening }
+        let originalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(originalOutput.port))!)
+        let movedEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(movedOutput.port))!)
+        XCTAssertNotEqual(originalEndpoint, movedEndpoint)
+        sender.connect(to: originalEndpoint, key: key, expectedReceiverID: receiverID, connectionID: connectionID)
+        other.connect(to: movedEndpoint, key: key, expectedReceiverID: receiverID)
+        eventually("senders connected") { status.connected && otherStatus.connected }
+        sender.submit(.lyrics); sender.takeOutput()
+        other.submit(.scripture); other.takeOutput()
+        eventually("both own their output") { status.ownsOutput && otherStatus.ownsOutput }
+
+        sender.updateEndpoint(movedEndpoint, connectionID: UUID())
+        sender.submit(.multilingual)
+        eventually("stale update leaves the active session alone") { originalOutput.content == .multilingual && status.feedback.accepted }
+        sender.updateEndpoint(movedEndpoint, connectionID: connectionID)
+        eventually("active session moves to the occupied receiver") {
+            originalOutput.connections == 0 && movedOutput.connections == 2 && status.connected && status.ownerName == other.name
+        }
+        XCTAssertEqual(status.connectionID, connectionID)
+        XCTAssertEqual(status.receiverID, receiverID)
+        XCTAssertFalse(status.ownsOutput)
+        XCTAssertEqual(movedOutput.ownerID, other.senderID)
+        XCTAssertEqual(movedOutput.content, .scripture)
+
+        sender.disconnect()
+        sender.updateEndpoint(originalEndpoint, connectionID: connectionID)
+        eventually("disconnected sender stays disconnected") { status.connectionID == nil && movedOutput.connections == 1 }
+        let settled = expectation(description: "endpoint refresh cannot restart a cancelled session")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        XCTAssertEqual(originalOutput.connections, 0)
+        XCTAssertNil(status.connectionID)
+    }
+
+    func testBonjourSenderReconnectsAfterReceiverChangesPort() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["ALTVIEW_SKIP_BONJOUR_TEST"] == "1",
+                      "Live Bonjour needs local multicast discovery.")
+        let key = try PairingKey.generate(), receiverID = UUID()
+        let name = "AltView port \(receiverID)"
+        var output = ReceiverStatus(), status = SenderStatus(), receivers: [DiscoveredReceiver] = []
+        let server = ReceiverServer(receiverID: receiverID) { output = $0 }
+        let sender = SenderClient(name: "Bonjour reconnect") { status = $0 }
+        let discovery = ReceiverDiscovery { receivers = $0; _ = $1 }
+        defer { sender.disconnect(); discovery.stop(); server.stop() }
+        server.start(name: name, key: key)
+        discovery.start()
+        eventually("automatic port advertised") { output.listening && receivers.contains { $0.receiverID == receiverID } }
+        let endpoint = try XCTUnwrap(receivers.first { $0.receiverID == receiverID }?.endpoint)
+        let previousPort = try XCTUnwrap(output.port)
+        // Reserve a different port while the first listener still owns its port,
+        // so this test does not depend on the OS allocator choosing a new number.
+        let nextPort = try OccupiedReceiverPort()
+        defer { nextPort.release() }
+        XCTAssertNotEqual(previousPort, nextPort.port)
+        sender.connect(to: endpoint, key: key, expectedReceiverID: receiverID)
+        eventually("Bonjour connection ready") { status.connected }
+        sender.submit(.lyrics); sender.takeOutput()
+        eventually("initial snapshot accepted") { status.feedback.accepted && output.content == .lyrics }
+        server.stop()
+        eventually("old service removed") { !output.listening && !status.connected && !receivers.contains { $0.receiverID == receiverID } }
+        nextPort.release()
+        server.start(name: name, key: key, port: nextPort.port)
+        eventually("same saved service resolves new port and restores output", timeout: 20) {
+            output.port == nextPort.port && output.content == .lyrics && status.ownsOutput && status.feedback.accepted
+        }
+        XCTAssertEqual(status.receiverID, receiverID)
+    }
+
+    func testReceiverRecoversWhenOccupiedPortBecomesAvailable() throws {
+        let occupied = try OccupiedReceiverPort()
+        defer { occupied.release() }
+        let key = try PairingKey.generate(), receiverID = UUID()
+        var output = ReceiverStatus(), status = SenderStatus()
+        let server = ReceiverServer(receiverID: receiverID, startupRetryTimeout: 5, startupRetryInterval: 0.1) { output = $0 }
+        let sender = SenderClient(name: "Recovery") { status = $0 }
+        defer { sender.disconnect(); server.stop() }
+        server.updateTemplatePolicy(.fixed(.lyrics))
+        server.start(name: "Recovery", key: key, port: occupied.port, advertise: false)
+        eventually("port conflict is being retried") { output.starting && output.message.contains("retrying") }
+        XCTAssertFalse(output.listening)
+        XCTAssertNil(output.port)
+        XCTAssertEqual(output.content, .empty)
+        occupied.release()
+        eventually("same port recovers without another start") { output.listening && !output.starting && output.port == occupied.port }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: occupied.port)!), key: key, expectedReceiverID: receiverID)
+        eventually("original pairing and template policy survive") { status.connected && status.templateCapabilities.policy == .fixed(.lyrics) }
+        XCTAssertNil(output.ownerID)
+        sender.submit(.lyrics); sender.takeOutput()
+        eventually("recovered receiver accepts text") { output.content == .lyrics && status.feedback.accepted }
+    }
+
+    func testPersistentPortConflictStopsRetryingAndAllowsManualResume() throws {
+        let occupied = try OccupiedReceiverPort()
+        defer { occupied.release() }
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus()
+        let server = ReceiverServer(receiverID: UUID(), startupRetryTimeout: 0.5, startupRetryInterval: 0.05) { output = $0 }
+        defer { server.stop() }
+        server.start(name: "Busy", key: key, port: occupied.port, advertise: false)
+        eventually("retry budget expires", timeout: 3) { !output.starting && output.message.hasPrefix("Could not receive: port") }
+        XCTAssertFalse(output.listening)
+        XCTAssertTrue(output.message.contains("resume receiving"))
+        occupied.release()
+        let settled = expectation(description: "no more automatic starts after deadline")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        XCTAssertFalse(output.listening)
+        XCTAssertFalse(output.starting)
+        server.start(name: "Busy", key: key, port: occupied.port, advertise: false)
+        eventually("manual resume gets a fresh attempt") { output.listening && output.port == occupied.port }
+    }
+
+    func testNewReceiverStartSupersedesPendingPortRetry() throws {
+        let occupied = try OccupiedReceiverPort()
+        defer { occupied.release() }
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus()
+        let server = ReceiverServer(receiverID: UUID(), startupRetryTimeout: 5, startupRetryInterval: 0.2) { output = $0 }
+        defer { server.stop() }
+        server.start(name: "Old start", key: key, port: occupied.port, advertise: false)
+        eventually("old start is retrying") { output.starting && output.message.contains("retrying") }
+        server.start(name: "New start", key: key, advertise: false)
+        eventually("new listener ready") { output.listening }
+        let newPort = try XCTUnwrap(output.port)
+        XCTAssertNotEqual(newPort, occupied.port)
+        occupied.release()
+        let settled = expectation(description: "old retry cannot replace new listener")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        XCTAssertTrue(output.listening)
+        XCTAssertEqual(output.port, newPort)
+    }
+
     func testTemplateCatalogueAndLiveOverridesReachOwnersAndConnectedObservers() throws {
         let key = try PairingKey.generate()
         var output = ReceiverStatus(), aStatus = SenderStatus(), bStatus = SenderStatus()
@@ -384,6 +531,39 @@ final class NetworkTests: XCTestCase {
         wait(for: [settled], timeout: 3)
         XCTAssertEqual(receiver.acceptedConnections, attempts)
     }
+}
+
+/// A real listener without port sharing, used to reproduce EADDRINUSE deterministically.
+final class OccupiedReceiverPort {
+    let port: UInt16
+    private var descriptor: Int32
+
+    init() throws {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(descriptor, $0, &length) }
+        }
+        guard bound == 0, named == 0, listen(descriptor, 1) == 0 else {
+            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            Darwin.close(descriptor)
+            throw error
+        }
+        self.descriptor = descriptor
+        port = UInt16(bigEndian: address.sin_port)
+    }
+
+    func release() {
+        if descriptor >= 0 { Darwin.close(descriptor); descriptor = -1 }
+    }
+    deinit { release() }
 }
 
 /// A future or older v2 receiver for discovery interoperability tests.

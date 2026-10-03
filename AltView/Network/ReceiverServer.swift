@@ -4,6 +4,7 @@ import os
 
 struct ReceiverStatus: Equatable {
     var listening = false
+    var starting = false
     var port: UInt16?
     var connections = 0
     var connectedSenders: [SenderIdentity] = []
@@ -24,60 +25,121 @@ final class ReceiverServer {
     private var status = ReceiverStatus()
     private var timer: DispatchSourceTimer?
     private let delivery: SnapshotMailbox<ReceiverStatus>
+    private let startupRetryTimeout: TimeInterval
+    private let startupRetryInterval: TimeInterval
+    private var startID: UUID?
+    private var retryWork: DispatchWorkItem?
 
-    init(receiverID: UUID, callbackQueue: DispatchQueue = .main, onStatus: @escaping (ReceiverStatus) -> Void) {
+    private struct ListenerStart {
+        let id = UUID()
+        let name: String
+        let key: Data
+        let port: UInt16
+        let advertise: Bool
+        let deadline: TimeInterval
+    }
+
+    init(receiverID: UUID, callbackQueue: DispatchQueue = .main,
+         startupRetryTimeout: TimeInterval = AltViewProtocol.connectionTimeout, startupRetryInterval: TimeInterval = 1,
+         onStatus: @escaping (ReceiverStatus) -> Void) {
         self.receiverID = receiverID
+        self.startupRetryTimeout = startupRetryTimeout
+        self.startupRetryInterval = startupRetryInterval
         delivery = SnapshotMailbox(queue: callbackQueue, consume: onStatus)
     }
     func start(name: String, key: Data, port: UInt16 = 0, advertise: Bool = true) {
         queue.async { [weak self] in
             guard let self else { return }
             self.stopOnQueue()
-            do {
-                let listener = try NWListener(using: SecureConnection.parameters(key: key), on: NWEndpoint.Port(rawValue: port)!)
-                self.listener = listener
-                if advertise {
-                    // Public identity lets discovery omit this Mac; pairing secrets never leave TLS.
-                    listener.service = NWListener.Service(name: name, type: AltViewProtocol.serviceType,
-                        txtRecord: NWTXTRecord(["receiverID": self.receiverID.uuidString]))
-                }
-                listener.stateUpdateHandler = { [weak self, weak listener] newState in
-                    guard let self, let listener, self.listener === listener else { return }
-                    switch newState {
-                    case .ready:
-                        self.status.listening = true
-                        self.status.port = listener.port?.rawValue
-                        self.status.message = "Ready for senders"
-                        AltViewLog.receiver.notice("listener_ready port=\(self.status.port ?? 0) protocol=\(AltViewProtocol.version)")
-                        self.publish()
-                    case .failed(let error), .waiting(let error):
-                        AltViewLog.receiver.error("listener_failed code=\(AltViewLog.errorCode(error), privacy: .public)")
-                        self.stopOnQueue()
-                        self.status.message = "Could not receive: \(error.localizedDescription)"
-                        self.publish()
-                    default: break
-                    }
-                }
-                listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
-                listener.start(queue: self.queue)
-                let timer = DispatchSource.makeTimerSource(queue: self.queue)
-                timer.schedule(deadline: .now() + 1, repeating: 1)
-                timer.setEventHandler { [weak self] in
-                    guard let self else { return }
-                    let now = ProcessInfo.processInfo.systemUptime
-                    for peer in Array(self.peers.values) {
-                        peer.send(WireMessage(kind: .heartbeat))
-                        peer.checkTimeout(now: now)
-                    }
-                }
-                self.timer = timer
-                timer.resume()
-            } catch {
-                AltViewLog.receiver.error("listener_start_failed")
-                self.status.message = "Could not start receiver: \(error.localizedDescription)"
-                self.publish()
-            }
+            let request = ListenerStart(name: name, key: key, port: port, advertise: advertise,
+                                        deadline: ProcessInfo.processInfo.systemUptime + self.startupRetryTimeout)
+            self.startID = request.id
+            self.status.starting = true
+            self.status.message = "Starting receiver…"
+            self.publish()
+            self.startListener(request)
         }
+    }
+    private func startListener(_ request: ListenerStart) {
+        guard startID == request.id else { return }
+        retryWork = nil
+        do {
+            let listener = try NWListener(using: SecureConnection.parameters(key: request.key), on: NWEndpoint.Port(rawValue: request.port)!)
+            self.listener = listener
+            if request.advertise {
+                // Public identity lets discovery omit this Mac; pairing secrets never leave TLS.
+                listener.service = NWListener.Service(name: request.name, type: AltViewProtocol.serviceType,
+                    txtRecord: NWTXTRecord(["receiverID": receiverID.uuidString]))
+            }
+            listener.stateUpdateHandler = { [weak self, weak listener] newState in
+                guard let self, let listener, self.startID == request.id, self.listener === listener else { return }
+                switch newState {
+                case .ready:
+                    self.status.starting = false
+                    self.status.listening = true
+                    self.status.port = listener.port?.rawValue
+                    self.status.message = "Ready for senders"
+                    AltViewLog.receiver.notice("listener_ready port=\(self.status.port ?? 0) protocol=\(AltViewProtocol.version)")
+                    self.publish()
+                case .failed(let error), .waiting(let error):
+                    self.listenerFailed(error, request: request)
+                default: break
+                }
+            }
+            listener.newConnectionHandler = { [weak self, weak listener] connection in
+                guard let self, let listener, self.startID == request.id, self.listener === listener else {
+                    connection.cancel(); return
+                }
+                self.accept(connection)
+            }
+            listener.start(queue: queue)
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + 1, repeating: 1)
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                for peer in Array(self.peers.values) {
+                    peer.send(WireMessage(kind: .heartbeat))
+                    peer.checkTimeout(now: now)
+                }
+            }
+            self.timer = timer
+            timer.resume()
+        } catch {
+            listenerFailed(error, request: request)
+        }
+    }
+    private func listenerFailed(_ error: Error, request: ListenerStart) {
+        guard startID == request.id else { return }
+        let portBusy = (error as? NWError) == .posix(.EADDRINUSE)
+        let remaining = request.deadline - ProcessInfo.processInfo.systemUptime
+        let shouldRetry = status.starting && portBusy && remaining > 0
+        let retryExpired = status.starting && portBusy && remaining <= 0
+        if let networkError = error as? NWError {
+            AltViewLog.receiver.error("listener_failed code=\(AltViewLog.errorCode(networkError), privacy: .public)")
+        } else {
+            AltViewLog.receiver.error("listener_start_failed")
+        }
+        stopOnQueue()
+        if shouldRetry {
+            // Retry the same receiver and credentials; never take another app's port.
+            startID = request.id
+            status.starting = true
+            status.message = "Receiving port is busy — retrying automatically…"
+            let delay = min(startupRetryInterval, remaining)
+            AltViewLog.receiver.notice("listener_retry_scheduled port=\(request.port) delay_s=\(delay) remaining_s=\(remaining)")
+            let work = DispatchWorkItem { [weak self] in self?.startListener(request) }
+            retryWork = work
+            queue.asyncAfter(deadline: .now() + delay, execute: work)
+        } else {
+            if retryExpired {
+                AltViewLog.receiver.notice("listener_retry_exhausted port=\(request.port)")
+            }
+            status.message = portBusy
+                ? "Could not receive: port \(request.port) is busy. Close any other copy of AltView, then resume receiving."
+                : "Could not receive: \(error.localizedDescription)"
+        }
+        publish()
     }
     func updateOutputReadiness(_ readiness: OutputReadiness) {
         queue.async { [weak self] in
@@ -107,6 +169,8 @@ final class ReceiverServer {
         }
     }
     private func stopOnQueue() {
+        startID = nil
+        retryWork?.cancel(); retryWork = nil
         if listener != nil || !peers.isEmpty {
             AltViewLog.receiver.notice("receiver_stopped peers=\(self.peers.count) owner_peer=\(self.state.ownerConnection?.uuidString ?? "none", privacy: .public) lease=\(self.state.lease?.uuidString ?? "none", privacy: .public) revision=\(self.state.revision)")
         }

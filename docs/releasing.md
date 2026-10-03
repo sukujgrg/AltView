@@ -138,7 +138,7 @@ and entitlement checks, history preservation and publication without real upload
 App layout tests use windows that can exceed the runner's display size, so compact
 and tall layouts are checked at their requested dimensions. Hosted CI explicitly
 sets `TEST_RUNNER_ALTVIEW_SKIP_BONJOUR_TEST=1` (forwarded by Xcode as
-`ALTVIEW_SKIP_BONJOUR_TEST`) to skip only the live multicast discovery test;
+`ALTVIEW_SKIP_BONJOUR_TEST`) to skip only the live multicast discovery tests;
 receiver identity parsing/filtering and real loopback TLS tests still run.
 `make test` locally includes live Bonjour discovery by default and needs local
 network access. Two-Mac discovery remains part of the manual hardware checks.

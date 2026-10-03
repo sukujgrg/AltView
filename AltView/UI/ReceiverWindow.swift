@@ -74,7 +74,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }()
     private lazy var settingsPopover: NSPopover = {
         let controller = NSViewController()
-        controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 460))
+        controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 490))
         controller.view.setAccessibilityIdentifier("workspaceSettingsContent")
         let receiver = UI.column(
             UI.label("Receive on this Mac", size: 13, bold: true),
@@ -82,7 +82,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             UI.column(UI.label("Receiver name", size: 11, color: .secondaryLabelColor), nameField, spacing: 4),
             UI.row(pairingCodeField, copyButton, NSView()),
             pairingInstructions, pairingLabel,
-            UI.row(receiveButton, resetButton, NSView()), spacing: 10)
+            UI.row(receiveButton, resetButton, NSView()), networkLabel, spacing: 10)
         let customText = UI.column(
             UI.row(UI.label("Custom Text", size: 13, bold: true), NSView(), customTextSwitch),
             UI.label("Compose messages on this Mac or send them to another AltView.", size: 12, color: .secondaryLabelColor),
@@ -104,7 +104,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let contentBadge = StatusBadge("NO TEXT")
     private var updatingDraft = false
 
-    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 49721,
+    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 0,
          window: NSWindow? = nil) {
         self.defaults = defaults; self.receiverPort = receiverPort
         customTextEnabled = defaults.bool(forKey: "customTextEnabled")
@@ -199,6 +199,10 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         pairingStatusLabel.maximumNumberOfLines = 2
         pairingStatusLabel.lineBreakMode = .byTruncatingTail
         pairingInstructions.font = .systemFont(ofSize: 12)
+        networkLabel.setAccessibilityIdentifier("receiverManualPort")
+        networkLabel.isSelectable = true
+        networkLabel.isHidden = true
+        networkLabel.toolTip = "This port is chosen automatically and may change when receiving restarts."
         let pairingAction = UI.row(pairSenderButton, NSView())
         // The horizontal spacer must not make this row absorb spare window height.
         pairingAction.heightAnchor.constraint(equalTo: pairSenderButton.heightAnchor).isActive = true
@@ -282,35 +286,41 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         guard !stopped else { return }
         receiverStatus = status
         onPresentationActivityChange?()
-        starting = false
-        receiveButton.title = status.listening ? "Pause Receiving" : "Resume Receiving"
+        starting = status.starting
+        let receiving = status.listening || status.starting
+        receiveButton.title = receiving ? "Pause Receiving" : "Resume Receiving"
         receiveButton.isEnabled = pairingKey != nil
         copyButton.isEnabled = pairingKey != nil
         resetButton.isEnabled = pairingKey != nil
-        nameField.isEditable = !status.listening
+        nameField.isEditable = !receiving
         nameField.isSelectable = true
-        nameField.drawsBackground = !status.listening
-        nameField.isBezeled = !status.listening
-        nameField.toolTip = status.listening ? "Pause receiving to change this Mac’s receiver name." : nil
+        nameField.drawsBackground = !receiving
+        nameField.isBezeled = !receiving
+        nameField.toolTip = receiving ? "Pause receiving to change this Mac’s receiver name." : nil
         statusLabel.stringValue = status.listening
             ? (status.ownerName != nil ? "Receiving text" : status.connections > 0 ? "Sender connected" : "Ready to receive")
-            : (status.message.hasPrefix("Could not") ? status.message : "Receiving paused")
-        statusLabel.textColor = status.listening ? .systemGreen : .secondaryLabelColor
+            : (status.starting || status.message.hasPrefix("Could not") ? status.message : "Receiving paused")
+        statusLabel.textColor = status.listening ? .systemGreen : status.starting ? .systemOrange : .secondaryLabelColor
         let senderNames = status.connectedSenders.map { $0.id == composer.senderID ? "Text on this Mac" : $0.name }.joined(separator: ", ")
         let connectionText = status.connections > 0 ? "Connected to \(senderNames)" : "No sender connected"
         connectionLabel.stringValue = connectionText
         connectionLabel.toolTip = connectionText
-        pairingStatusLabel.stringValue = connectionText
-        pairingStatusLabel.toolTip = connectionText
-        pairingStatusLabel.textColor = status.connections > 0 ? .systemGreen : .secondaryLabelColor
+        pairingStatusLabel.stringValue = status.starting || status.message.hasPrefix("Could not") ? status.message : connectionText
+        pairingStatusLabel.toolTip = pairingStatusLabel.stringValue
+        pairingStatusLabel.textColor = status.connections > 0 ? .systemGreen : status.starting ? .systemOrange : .secondaryLabelColor
         pairingInstructions.stringValue = status.connections > 0
             ? "Already connected. Use this code only to pair another sender."
             : status.listening
             ? "In your sending app’s AltView settings, connect to this Mac. Enter this code only if asked."
+            : status.starting
+            ? "Wait for receiving to start, then connect from your sending app."
             : "Resume receiving, then choose this Mac in your sending app’s AltView settings and enter the code."
-        networkLabel.stringValue = status.port.map { "Visible on your local network · Port \($0)\n\(status.connections) connected sender\(status.connections == 1 ? "" : "s")" } ?? "Resume receiving to let another Mac connect."
-        statusLabel.toolTip = networkLabel.stringValue
-        statusLabel.setAccessibilityHelp(networkLabel.stringValue)
+        networkLabel.stringValue = status.port.map { "For manual connections: port \($0)" } ?? ""
+        networkLabel.isHidden = !status.listening
+        let networkDetail = status.port.map { "Visible on your local network · Port \($0)\n\(status.connections) connected sender\(status.connections == 1 ? "" : "s")" }
+            ?? (status.starting ? "Keep AltView open while receiving starts." : "Resume receiving to let another Mac connect.")
+        statusLabel.toolTip = networkDetail
+        statusLabel.setAccessibilityHelp(networkDetail)
         ownerLabel.stringValue = status.ownerName.map { "From \(status.ownerID == composer.senderID ? "Text on this Mac" : $0)" }
             ?? (status.connections > 0 ? "Sender connected · waiting for text" : "No active sender")
         ownerLabel.toolTip = ownerLabel.stringValue
@@ -325,6 +335,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         }
         refreshCanvas()
         if status.listening, let port = status.port, let key = pairingKey {
+            composer.updateLocalReceiverPort(port)
             let waiters = localWaiters; localWaiters.removeAll()
             waiters.forEach { $0(.success(LocalReceiverConnection(port: port, key: key))) }
         } else if !status.listening && status.message.hasPrefix("Could not") { failLocalConnections(status.message) }
@@ -408,7 +419,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     @objc func showReceiverPage() { showPage("receiver") }
     @objc private func toggleReceiving() {
         receiveButton.isEnabled = false
-        if receiverStatus.listening { server.stop(); failLocalConnections("Receiving paused.") } else { startReceiving() }
+        if receiverStatus.listening || starting { server.stop(); failLocalConnections("Receiving paused.") } else { startReceiving() }
     }
     private func startReceiving() {
         guard let key = pairingKey, !starting, !stopped else { return }

@@ -62,6 +62,19 @@ final class SenderClient {
             self.openConnection()
         }
     }
+    /// Follow an address change for the same receiver without resetting its
+    /// credentials, submitted snapshot, or permission to resume ownership.
+    func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) {
+        queue.async { [weak self] in
+            guard let self, self.wantsConnection, self.status.connectionID == connectionID,
+                  self.endpoint != endpoint else { return }
+            self.endpoint = endpoint
+            self.reconnectWork?.cancel(); self.reconnectWork = nil
+            self.peer?.onClose = nil; self.peer?.close(nil)
+            self.prepareToReconnect()
+            self.openConnection()
+        }
+    }
     func submit(_ content: DisplayContent) { submissions.offer(content) }
     func takeOutput() {
         queue.async { [weak self] in
@@ -101,6 +114,14 @@ final class SenderClient {
         peer?.onClose = nil; peer?.close(nil); peer = nil
         lease = nil; status = SenderStatus()
     }
+    private func prepareToReconnect() {
+        shouldRestoreOwnership = status.ownsOutput || shouldRestoreOwnership
+        peer = nil; lease = nil
+        status.connected = false; status.ownsOutput = false
+        status.feedback = DeliveryFeedback()
+        status.templateCapabilities = TemplateCapabilities()
+        timer?.cancel(); timer = nil
+    }
     private func openConnection() {
         guard wantsConnection, let endpoint, let key else { return }
         let setupTimeout: TimeInterval
@@ -139,12 +160,7 @@ final class SenderClient {
         peer.onClose = { [weak self, weak peer] reason in
             guard let self, let peer, self.peer === peer else { return }
             AltViewLog.sender.notice("receiver_disconnected connection=\(self.status.connectionID?.uuidString ?? "none", privacy: .public) peer=\(peer.id.uuidString, privacy: .public) cause=\(peer.closeCause?.rawValue ?? "unknown", privacy: .public) owned_output=\(self.status.ownsOutput) sent_revision=\(self.status.feedback.sentRevision) accepted_revision=\(self.status.feedback.acceptedRevision)")
-            self.shouldRestoreOwnership = self.status.ownsOutput || self.shouldRestoreOwnership
-            self.peer = nil; self.lease = nil
-            self.status.connected = false; self.status.ownsOutput = false
-            self.status.feedback = DeliveryFeedback()
-            self.status.templateCapabilities = TemplateCapabilities()
-            self.timer?.cancel(); self.timer = nil
+            self.prepareToReconnect()
             if let deadline = self.initialConnectionDeadline {
                 if self.wantsConnection, peer.retryableSetupFailure, ProcessInfo.processInfo.systemUptime < deadline {
                     // A Bonjour connection can remain stuck in preparing after Local Network

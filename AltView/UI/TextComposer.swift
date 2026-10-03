@@ -72,7 +72,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     private var connectionSheet: NSWindow?
     private let receiverPicker = NSPopUpButton()
     private let hostField = NSTextField(string: "")
-    private let portField = NSTextField(string: "49721")
+    private let portField = NSTextField(string: "")
     private let codeField: NSSecureTextField = {
         let field = NSSecureTextField(string: "")
         field.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
@@ -262,6 +262,11 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     }
     func updateLocalOutput(owner: String?, ownerID: UUID? = nil, notice: String) {
         localOwnerID = ownerID; localOwnerName = owner; localOutputNotice = notice; refresh()
+    }
+    func updateLocalReceiverPort(_ port: UInt16) {
+        guard !remote, let activeConnectionID else { return }
+        client.updateEndpoint(.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!),
+                              connectionID: activeConnectionID)
     }
     func updateLocalDisplay(_ status: String) { localDisplayStatus = status; refresh() }
     private func refresh() {
@@ -468,6 +473,8 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         hostField.placeholderString = "e.g. 192.168.1.20 or receiver.local"
         hostField.setAccessibilityLabel("Receiver address"); hostField.delegate = self
         portField.setAccessibilityLabel("Receiver port"); portField.delegate = self
+        portField.placeholderString = "Port"
+        portField.toolTip = "Use the current port shown in AltView Settings on the receiving Mac."
         if portField.constraints.isEmpty { portField.widthAnchor.constraint(equalToConstant: 75).isActive = true }
         codeField.delegate = self
         codeField.stringValue = ""
@@ -479,7 +486,8 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         let pairing = UI.column(UI.label("2. Enter that Mac’s pairing code", size: 13, bold: true), codeField, pairingHint, spacing: 6)
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 610, height: 470), styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "Connect to a Receiving Mac"; panel.isReleasedWhenClosed = false
-        let manual = UI.column(UI.row(UI.label("Address"), hostField), UI.row(UI.label("Port"), portField, NSView()), spacing: 8)
+        let manual = UI.column(UI.row(UI.label("Address"), hostField),
+            UI.row(UI.label("Port"), portField, UI.label("Shown in the receiving Mac’s AltView Settings.", size: 11, color: .secondaryLabelColor)), spacing: 8)
         manualFields = manual; manual.isHidden = manualToggle.state == .off
         let refresh = UI.button("Refresh", target: self, action: #selector(findReceivers)); refreshButton = refresh
         let connect = UI.button(session.canShow ? "Connect & Publish Text" : "Connect", target: self, action: #selector(connectAndShow))
@@ -556,7 +564,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { showConnectionError("Enter the receiving Mac’s address.", field: hostField); return }
             guard let port = UInt16(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), port > 0 else {
-                showConnectionError("Enter a port from 1 to 65535. AltView normally uses 49721.", field: portField); return
+                showConnectionError("Enter the current port shown in AltView Settings on the receiving Mac (1–65535).", field: portField); return
             }
             endpoint = .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
             account = "sender.\(host):\(port)"; name = host

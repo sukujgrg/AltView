@@ -1,5 +1,20 @@
 # Standalone validation
 
+## Automatic receiving ports — 3 October 2026
+
+- Normal app startup now requests an available port from macOS and advertises it through Bonjour. There is no fixed-port preference. Users choose the receiving Mac by name; receiver identity and pairing remain independent of its port.
+- Settings shows the assigned port as a read-only detail for manual connections and hides it while receiving is stopped. The manual sender form no longer assumes 49721 and directs users to the receiver's current Settings. Existing manual connections need their port updated after it changes; Bonjour connections resolve it automatically.
+- All **123 app tests passed**, including live Bonjour tests, in `build/AutomaticPortFullTests.xcresult`. New checks verify two app controllers can receive concurrently using their default ports, Settings tracks the active port through Pause/Resume, the local sender uses that port, and a Bonjour sender reconnects and restores accepted content after the same receiver moves to a different port. All 39 window tests passed; the new Settings test waits for its popover to close before the next test starts.
+- The universal Release build passed in `build/automatic-port-release.log`. Intel and Apple Silicon slices were verified for the app and Sparkle helpers, with minimum macOS 12.0 retained. This build has not yet been installed on the second Mac or notarized.
+
+## Automatic port recovery — 3 October 2026
+
+- A two-Mac incident recorded receiver startup failure `posix:48` (`EADDRINUSE`). The receiving port later refused connections, and Resume Receiving restored operation. The process or socket that originally occupied the port was not identified.
+- AltView now retries that specific startup failure once a second for up to 30 seconds, retaining the port, receiver identity, pairing key and template policy. Output and Settings show recovery status; Pause Receiving, shutdown or a newer start cancels pending retries. Other startup errors still report failure immediately. An ongoing conflict ends with an actionable error and allows manual Resume Receiving.
+- Pending local publications wait through recovery. Recovery itself does not take ownership or publish text. Retry events and exhaustion are recorded in native logs without content or credentials.
+- All **121 app tests passed** in `build/PortRecoveryFullTests.xcresult`, including five new tests using an actual occupied TCP port. They cover automatic recovery and encrypted publication, deadline exhaustion and manual resume, replacement of a pending start, keeping a local publication pending, and cancelling recovery/publication through Settings.
+- The universal Release build passed in `build/port-recovery-release.log`; the app and Sparkle helper binaries contain both Intel and Apple Silicon slices, and the app retains minimum macOS 12.0. All **104 offline release/feed regressions** passed. The self-healing build has not yet been tested on the second Mac or notarized.
+
 ## Template discovery — 3 October 2026
 
 - AltView now advertises `templates` and `templatePolicy` in its welcome and feedback messages. Sender status exposes the catalogue and applied override. IDs are extensible strings; older receivers and unavailable choices receive unmarked text, while the desired choice is retained for reconnects.

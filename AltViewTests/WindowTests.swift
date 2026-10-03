@@ -10,6 +10,158 @@ private final class LayoutTestWindow: NSWindow {
 }
 
 final class WindowTests: XCTestCase {
+    func testLocalComposerRestoresPublishedSnapshotAfterAutomaticPortChanges() throws {
+        let domain = "AltViewTests.LocalPortChange.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let published = DisplayContent(title: "Published title", body: "Published text")
+        defaults.set(true, forKey: "customTextEnabled")
+        try defaults.set(JSONEncoder().encode(published), forKey: "customTextDraft")
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate())
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        controller.showComposerPage()
+        let root = try XCTUnwrap(controller.window?.contentView)
+        eventually("receiver ready") { controller.receiverStatus.listening }
+        let previousPort = try XCTUnwrap(controller.receiverStatus.port)
+        try button("Publish Text & Design", in: root).performClick(nil)
+        eventually("local snapshot published") { controller.receiverStatus.content == published }
+        let owner = try XCTUnwrap(controller.receiverStatus.ownerID)
+        let title = try field("Text title", in: root)
+        title.stringValue = "Private draft edit"
+        title.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: title))
+        try button("Hide Text", in: root).performClick(nil)
+        var hidden = published; hidden.visible = false
+        eventually("published snapshot hidden") { controller.receiverStatus.content == hidden }
+
+        let settings = try settingsContent(in: controller)
+        try button("Pause Receiving", in: settings).performClick(nil)
+        eventually("receiving paused") { !controller.receiverStatus.listening }
+        try button("Resume Receiving", in: settings).performClick(nil)
+        eventually("receiving resumed") { controller.receiverStatus.listening }
+        XCTAssertNotEqual(controller.receiverStatus.port, previousPort)
+        eventually("local sender restores hidden snapshot on the new port", timeout: 10) {
+            controller.receiverStatus.ownerID == owner && controller.receiverStatus.content == hidden
+        }
+        XCTAssertEqual(title.stringValue, "Private draft edit", "Reconnect must preserve the private draft")
+        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
+        controller.showSettings(); wait(for: [closed], timeout: 3)
+
+        try button("Stop Presenting", in: root).performClick(nil)
+        eventually("local ownership released") { controller.receiverStatus.ownerID == nil }
+        let reopened = try settingsContent(in: controller)
+        try button("Pause Receiving", in: reopened).performClick(nil)
+        eventually("receiving paused after release") { !controller.receiverStatus.listening }
+        try button("Resume Receiving", in: reopened).performClick(nil)
+        eventually("released sender reconnects without publishing", timeout: 10) {
+            controller.receiverStatus.listening && controller.receiverStatus.connections == 1
+        }
+        XCTAssertNil(controller.receiverStatus.ownerID)
+        XCTAssertEqual(controller.receiverStatus.content, .empty)
+        let closedAgain = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
+        controller.showSettings(); wait(for: [closedAgain], timeout: 3)
+    }
+
+    func testDefaultReceiversChooseIndependentPortsAndShowManualConnectionDetails() throws {
+        let firstDomain = "AltViewTests.AutomaticPort.\(UUID())", secondDomain = "AltViewTests.AutomaticPort.\(UUID())"
+        let firstDefaults = try XCTUnwrap(UserDefaults(suiteName: firstDomain))
+        let secondDefaults = try XCTUnwrap(UserDefaults(suiteName: secondDomain))
+        firstDefaults.set("Automatic port one", forKey: "receiverName")
+        secondDefaults.set("Automatic port two", forKey: "receiverName")
+        let key = try PairingKey.generate()
+        // Exercise the real app default, without a test port override.
+        let first = ReceiverWindowController(defaults: firstDefaults, pairingKey: key)
+        let second = ReceiverWindowController(defaults: secondDefaults, pairingKey: try PairingKey.generate())
+        defer {
+            first.shutdown(); first.close(); second.shutdown(); second.close()
+            firstDefaults.removePersistentDomain(forName: firstDomain); secondDefaults.removePersistentDomain(forName: secondDomain)
+        }
+        eventually("both defaults start without a port conflict") { first.receiverStatus.listening && second.receiverStatus.listening }
+        let firstPort = try XCTUnwrap(first.receiverStatus.port), secondPort = try XCTUnwrap(second.receiverStatus.port)
+        XCTAssertGreaterThan(firstPort, 0); XCTAssertGreaterThan(secondPort, 0)
+        XCTAssertNotEqual(firstPort, secondPort)
+        first.showWindow(nil)
+        let settings = try settingsContent(in: first)
+        let details = try XCTUnwrap(descendants(settings).compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityIdentifier() == "receiverManualPort"
+        })
+        XCTAssertFalse(details.isHidden)
+        XCTAssertTrue(details.stringValue.contains(String(firstPort)))
+        XCTAssertFalse(details.isEditable, "Receiving ports are automatic, not a user setting")
+        settings.layoutSubtreeIfNeeded()
+        XCTAssertTrue(settings.bounds.contains(details.convert(details.bounds, to: settings)))
+        try button("Pause Receiving", in: settings).performClick(nil)
+        eventually("paused port is no longer advertised to the user") { !first.receiverStatus.listening && details.isHidden }
+        try button("Resume Receiving", in: settings).performClick(nil)
+        eventually("resumed port is shown") { first.receiverStatus.listening && !details.isHidden }
+        XCTAssertTrue(details.stringValue.contains(String(try XCTUnwrap(first.receiverStatus.port))))
+        var local: LocalReceiverConnection?
+        first.connectLocal { local = try? $0.get() }
+        eventually("local sender uses assigned port") { local != nil }
+        XCTAssertEqual(local?.port, first.receiverStatus.port)
+        XCTAssertEqual(local?.key, key)
+        // Let the transient popover finish closing before another test opens one.
+        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
+        first.showSettings()
+        wait(for: [closed], timeout: 3)
+    }
+
+    func testReceiverPortRecoveryKeepsLocalPublicationWaiting() throws {
+        let occupied = try OccupiedReceiverPort()
+        defer { occupied.release() }
+        let domain = "AltViewTests.PortRecovery.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: occupied.port)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver is recovering") { controller.receiverStatus.starting && controller.receiverStatus.message.contains("retrying") }
+        var connection: LocalReceiverConnection?
+        controller.connectLocal { result in
+            switch result {
+            case .success(let value): connection = value
+            case .failure(let error): XCTFail("Temporary conflict must keep publication pending: \(error)")
+            }
+        }
+        XCTAssertNil(connection)
+        occupied.release()
+        eventually("pending local connection continues automatically") { connection != nil && controller.receiverStatus.listening }
+        XCTAssertEqual(connection?.port, occupied.port)
+        XCTAssertEqual(connection?.key, key)
+        XCTAssertFalse(controller.receiverStatus.starting)
+        XCTAssertNil(controller.receiverStatus.ownerID, "Starting a receiver alone must not publish text")
+    }
+
+    func testPauseReceivingCancelsPortRecoveryAndPendingPublication() throws {
+        let occupied = try OccupiedReceiverPort()
+        defer { occupied.release() }
+        let domain = "AltViewTests.PausePortRecovery.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: occupied.port)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        controller.showWindow(nil)
+        eventually("receiver is recovering") { controller.receiverStatus.starting && controller.receiverStatus.message.contains("retrying") }
+        let settings = try settingsContent(in: controller)
+        XCTAssertTrue(descendants(settings).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("retrying automatically") })
+        let name = try field("Receiver name", in: settings)
+        XCTAssertFalse(name.isEditable)
+        let cancelled = expectation(description: "pending publication cancelled")
+        controller.connectLocal { result in
+            if case .success = result { XCTFail("Pause must cancel the pending local connection") }
+            cancelled.fulfill()
+        }
+        try button("Pause Receiving", in: settings).performClick(nil)
+        wait(for: [cancelled], timeout: 2)
+        eventually("receiving paused") { !controller.receiverStatus.starting && !controller.receiverStatus.listening }
+        XCTAssertTrue(name.isEditable)
+        occupied.release()
+        let settled = expectation(description: "cancelled retry cannot restart receiving")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { settled.fulfill() }
+        wait(for: [settled], timeout: 3)
+        XCTAssertFalse(controller.receiverStatus.listening)
+        XCTAssertFalse(controller.receiverStatus.starting)
+        try button("Resume Receiving", in: settings).performClick(nil)
+        eventually("explicit resume still works") { controller.receiverStatus.listening }
+        XCTAssertFalse(name.isEditable)
+    }
+
     func testReceiverAdvertisesSavedPolicyAndOnlyBroadcastsAppliedChanges() throws {
         let domain = "AltViewTests.TemplatePolicy.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
@@ -902,6 +1054,8 @@ final class WindowTests: XCTestCase {
         let sheet = try XCTUnwrap(window.attachedSheet?.contentView)
         try button("Connect using an address instead", in: sheet).performClick(nil)
         let host = try field("Receiver address", in: sheet); host.stringValue = "127.0.0.1"
+        XCTAssertEqual(try field("Receiver port", in: sheet).stringValue, "", "Manual connections must not assume the old fixed port")
+        try field("Receiver port", in: sheet).stringValue = "1"
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: host))
         try button("Connect & Publish Text", in: sheet).performClick(nil)
         wait(for: [lookup], timeout: 3)
