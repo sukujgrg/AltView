@@ -366,7 +366,8 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         bannerButton.isEnabled = template.showsArtwork
         canvasButton.isEnabled = template.showsArtwork
         if template.artwork == .builtIn {
-            filename.stringValue = "Navy banner with a gold accent"
+            filename.stringValue = preset == .lyrics
+                ? "Navy lyric panel with gold accents" : "Navy banner with a gold accent"
         } else { filename.stringValue = template.assetName ?? "No imported PNG" }
         filename.toolTip = template.artwork == .custom ? template.assetName : nil
         let unavailable = template.showsArtwork && template.artwork == .custom && artwork == nil

@@ -202,7 +202,11 @@ final class OutputCanvas: NSView {
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
         let template = presentation.template.resolved(for: presentation.displayedContent)
         if template.showsArtwork && template.artwork == .builtIn {
-            Self.drawBuiltInBanner(in: template.artworkRegion.rect)
+            if template.selectedContentTemplate(for: presentation.displayedContent) == .lyrics {
+                Self.drawBuiltInLyricsBanner(in: template.artworkRegion.rect)
+            } else {
+                Self.drawBuiltInBanner(in: template.artworkRegion.rect)
+            }
         } else if template.showsArtwork, let artwork = presentation.artwork {
             let bounds = template.artworkRegion.rect
             let factor = min(bounds.width / CGFloat(artwork.image.width), bounds.height / CGFloat(artwork.image.height))
@@ -223,6 +227,30 @@ final class OutputCanvas: NSView {
         NSRect(x: rect.minX + 14, y: rect.minY, width: rect.width - 24, height: rect.height * 0.28).fill()
         NSColor(srgbRed: 1, green: 0.65, blue: 0.18, alpha: 1).setFill()
         NSBezierPath(roundedRect: NSRect(x: rect.minX, y: rect.minY, width: 14, height: rect.height), xRadius: 5, yRadius: 5).fill()
+    }
+    /// A single, symmetrical panel lets lyrics use the full text area without
+    /// crossing the title band or left accent of the titled banner.
+    static func drawBuiltInLyricsBanner(in rect: NSRect) {
+        let radius = min(12, min(rect.width, rect.height) * 0.08)
+        let panel = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        NSColor(srgbRed: 0.04, green: 0.08, blue: 0.16, alpha: 1).setFill()
+        panel.fill()
+
+        let inset = min(2, min(rect.width, rect.height) * 0.02)
+        let outline = NSBezierPath(roundedRect: rect.insetBy(dx: inset, dy: inset), xRadius: radius, yRadius: radius)
+        outline.lineWidth = inset
+        NSColor(srgbRed: 0.10, green: 0.22, blue: 0.39, alpha: 1).setStroke()
+        outline.stroke()
+
+        // Keep the accents at the edges, clear of the expanded lyric body.
+        let thickness = min(3, rect.height * 0.012)
+        let edgeInset = min(6, rect.height * 0.024)
+        let width = rect.width * 0.18
+        NSColor(srgbRed: 1, green: 0.65, blue: 0.18, alpha: 1).setFill()
+        for y in [rect.minY + edgeInset, rect.maxY - edgeInset - thickness] {
+            NSBezierPath(roundedRect: NSRect(x: rect.midX - width / 2, y: y, width: width, height: thickness),
+                         xRadius: thickness / 2, yRadius: thickness / 2).fill()
+        }
     }
     private func drawText(_ content: DisplayContent, layout: CanvasTextLayout, style: OutputStyle) {
         func draw(_ text: String, rect: NSRect, size: CGFloat, bold: Bool = true) {

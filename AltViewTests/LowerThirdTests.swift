@@ -12,6 +12,7 @@ final class LowerThirdTests: XCTestCase {
         var style = OutputStyle(); style.alignment = .right; style.background = "00FF00"
         var saved = LowerThirdTemplate(); saved.animation = .none; saved.alignment = .right
         saved.showsTitle = false; saved.showsFooter = false
+        saved.showsArtwork = false // Compare text independently of each preset's artwork.
         for lowerThird in [false, true] {
             saved.enabled = lowerThird
             // Switching presets on the same presentation must invalidate cached text.
@@ -37,10 +38,60 @@ final class LowerThirdTests: XCTestCase {
                 if preset == .lyrics {
                     let resolved = saved.resolved(for: content)
                     XCTAssertEqual(resolved.effectiveBodyRegion, TemplateRegion(x: 10, y: 74, width: 80, height: 20))
-                    XCTAssertEqual(Set(LowerThirdGuideLayout.make(template: resolved, in: NSRect(x: 0, y: 0, width: 1920, height: 1080)).map(\.index)), Set([0, 2]))
+                    XCTAssertEqual(Set(LowerThirdGuideLayout.make(template: resolved, in: NSRect(x: 0, y: 0, width: 1920, height: 1080)).map(\.index)), Set([2]))
                 }
             }
         }
+    }
+
+    func testLyricsArtworkFollowsTemplateRequestsAndReceiverOverrides() throws {
+        let scene = CanvasPresentation(), canvas = OutputCanvas(presentation: scene)
+        defer { scene.stopAnimation() }
+        var style = OutputStyle(); style.background = "00FF00"
+        var template = LowerThirdTemplate(); template.enabled = true; template.animation = .none
+        var content = DisplayContent(emptyRegions: .reserve, template: .scripture)
+        scene.update(content: content, style: style, template: template, artwork: nil)
+        let titled = try render(canvas)
+        content.template = .lyrics
+        scene.update(content: content, style: style, template: template, artwork: nil)
+        let lyrics = try render(canvas)
+        XCTAssertNotEqual(lyrics, titled, "A template-only update must replace the cached artwork")
+        XCTAssertEqual(Set(LowerThirdGuideLayout.make(template: template.resolved(for: content),
+            in: NSRect(x: 0, y: 0, width: 1920, height: 1080)).map(\.index)), Set([0, 2]))
+        assertPixel(lyrics, x: 50, y: 80, equals: [10, 20, 41, 255])
+        assertPixel(lyrics, x: 50, y: 90, equals: [10, 20, 41, 255])
+        assertPixel(lyrics, x: 5, y: 90, equals: [0, 255, 0, 255])
+        for (selection, request, expected) in [
+            (TextTemplateSelection.lyrics, ContentTemplate.scripture, lyrics),
+            (.scripture, .lyrics, titled), (.custom, .lyrics, titled), (.sender, .scripture, titled)
+        ] {
+            template.textTemplate = selection; content.template = request
+            scene.update(content: content, style: style, template: template, artwork: nil)
+            XCTAssertEqual(try render(canvas), expected)
+        }
+        XCTAssertEqual(scene.template.artworkRegion, LowerThirdTemplate().artworkRegion)
+    }
+
+    func testLyricsTemplatePreservesImportedAndHiddenArtwork() throws {
+        let scene = CanvasPresentation(), canvas = OutputCanvas(presentation: scene)
+        defer { scene.stopAnimation() }
+        let artwork = PNGArtwork(id: UUID(), name: "fixture.png", image: try fixtureImage())
+        var style = OutputStyle(); style.background = "00FF00"
+        var template = LowerThirdTemplate(); template.enabled = true; template.animation = .none
+        template.artwork = .custom; template.artworkRegion = TemplateRegion(x: 0, y: 0, width: 100, height: 100)
+        var content = DisplayContent(emptyRegions: .reserve, template: .scripture)
+        scene.update(content: content, style: style, template: template, artwork: artwork)
+        let imported = try render(canvas)
+        content.template = .lyrics
+        scene.update(content: content, style: style, template: template, artwork: artwork)
+        XCTAssertEqual(try render(canvas), imported)
+        for source in [LowerThirdArtwork.custom, .builtIn] {
+            template.artwork = source; template.showsArtwork = false
+            scene.update(content: content, style: style, template: template, artwork: artwork)
+            let hidden = try render(canvas)
+            XCTAssertTrue(stride(from: 0, to: hidden.count, by: 4).allSatisfy { Array(hidden[$0..<$0+4]) == [0, 255, 0, 255] })
+        }
+        XCTAssertEqual(scene.artwork?.id, artwork.id)
     }
 
     func testReceiverCanOverrideTemplatesAndDecodeOlderDesigns() throws {
@@ -531,7 +582,10 @@ final class LowerThirdTests: XCTestCase {
     }
     private func pngFixture() throws -> Data { try encode(fixtureImage()) }
     private func render(_ scene: CanvasPresentation) throws -> [UInt8] {
-        let canvas = OutputCanvas(presentation: scene); canvas.frame = NSRect(x: 0, y: 0, width: 192, height: 108)
+        try render(OutputCanvas(presentation: scene))
+    }
+    private func render(_ canvas: OutputCanvas) throws -> [UInt8] {
+        canvas.frame = NSRect(x: 0, y: 0, width: 192, height: 108)
         let cg = try XCTUnwrap(CGContext(data: nil, width: 192, height: 108, bitsPerComponent: 8, bytesPerRow: 192 * 4,
             space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         cg.translateBy(x: 0, y: 108); cg.scaleBy(x: 1, y: -1)
