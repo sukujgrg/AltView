@@ -3,6 +3,11 @@ import CoreGraphics
 
 enum LowerThirdArtwork: String, Codable, CaseIterable { case builtIn = "Built-in banner", custom = "Imported PNG" }
 enum LowerThirdAnimation: String, Codable, CaseIterable { case none = "None", slide = "Slide", reveal = "Reveal" }
+enum LyricLineLayout: String, Codable, CaseIterable { case preserve = "Preserve lines", compact = "Compact pairs" }
+enum LyricJoiner: String, Codable, CaseIterable {
+    case space = "Space", comma = "Comma", dot = "Middle dot"
+    var separator: String { switch self { case .space: return " "; case .comma: return ", "; case .dot: return " · " } }
+}
 
 enum TextTemplateSelection: String, Codable, CaseIterable {
     case sender = "From sending app", custom = "Custom layout", scripture = "Scripture", lyrics = "Lyrics"
@@ -37,6 +42,10 @@ struct LowerThirdTemplate: Codable, Equatable {
     var duration = 0.45
     var alignment = CanvasAlignment.left
     var textTemplate = TextTemplateSelection.sender
+    // Saved profiles can edit the preset's alignment and row visibility.
+    var customized = false
+    var lyricLineLayout = LyricLineLayout.preserve
+    var lyricJoiner = LyricJoiner.space
     var showsArtwork = true
     var showsTitle = true
     var showsFooter = true
@@ -47,7 +56,7 @@ struct LowerThirdTemplate: Codable, Equatable {
 
     init() {}
     private enum CodingKeys: String, CodingKey {
-        case enabled, artwork, assetID, assetName, animation, duration, alignment, textTemplate
+        case enabled, artwork, assetID, assetName, animation, duration, alignment, textTemplate, customized, lyricLineLayout, lyricJoiner
         case showsArtwork, showsTitle, showsFooter, artworkRegion, titleRegion, bodyRegion, footerRegion
     }
     init(from decoder: Decoder) throws {
@@ -60,6 +69,9 @@ struct LowerThirdTemplate: Codable, Equatable {
         duration = try values.decode(Double.self, forKey: .duration)
         alignment = try values.decode(CanvasAlignment.self, forKey: .alignment)
         textTemplate = try values.decodeIfPresent(TextTemplateSelection.self, forKey: .textTemplate) ?? .sender
+        customized = try values.decodeIfPresent(Bool.self, forKey: .customized) ?? false
+        lyricLineLayout = try values.decodeIfPresent(LyricLineLayout.self, forKey: .lyricLineLayout) ?? .preserve
+        lyricJoiner = try values.decodeIfPresent(LyricJoiner.self, forKey: .lyricJoiner) ?? .space
         // Designs saved before these switches existed keep all areas on.
         showsArtwork = try values.decodeIfPresent(Bool.self, forKey: .showsArtwork) ?? true
         showsTitle = try values.decodeIfPresent(Bool.self, forKey: .showsTitle) ?? true
@@ -90,7 +102,7 @@ struct LowerThirdTemplate: Codable, Equatable {
 
     /// Resolve a preset without overwriting the receiver's custom alignment or rows.
     func applyingContentTemplate(for content: DisplayContent) -> Self {
-        guard let preset = selectedContentTemplate(for: content) else { return self }
+        guard !customized, let preset = selectedContentTemplate(for: content) else { return self }
         var result = self
         result.alignment = preset == .scripture ? .left : .center
         result.showsTitle = preset == .scripture

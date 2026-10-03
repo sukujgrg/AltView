@@ -10,6 +10,28 @@ struct OutputStyle: Codable, Equatable {
     var heightFraction: Double = 0.8
     var position = CanvasPosition.center
     var alignment = CanvasAlignment.center
+    var lineSpacing = 0.12
+    init() {}
+    private enum CodingKeys: String, CodingKey { case background, fontName, fontSize, heightFraction, position, alignment, lineSpacing }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        background = try values.decode(String.self, forKey: .background)
+        fontName = try values.decode(String.self, forKey: .fontName)
+        fontSize = try values.decode(Double.self, forKey: .fontSize)
+        heightFraction = try values.decode(Double.self, forKey: .heightFraction)
+        position = try values.decode(CanvasPosition.self, forKey: .position)
+        alignment = try values.decode(CanvasAlignment.self, forKey: .alignment)
+        lineSpacing = try values.decodeIfPresent(Double.self, forKey: .lineSpacing) ?? 0.12
+    }
+    func clamped() -> Self {
+        var result = self
+        result.fontSize = fontSize.isFinite ? min(160, max(12, fontSize)) : 88
+        result.heightFraction = heightFraction.isFinite ? min(0.9, max(0.15, heightFraction)) : 0.8
+        result.lineSpacing = lineSpacing.isFinite ? min(0.4, max(0, lineSpacing)) : 0.12
+        if background.count != 6 || UInt32(background, radix: 16) == nil { result.background = "000000" }
+        else { result.background = background.uppercased() }
+        return result
+    }
     var backgroundColor: NSColor {
         let rgb = UInt32(background, radix: 16) ?? 0
         return NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255,
@@ -35,12 +57,13 @@ struct OutputStyle: Codable, Equatable {
         paragraph.alignment = textAlignment
         paragraph.baseWritingDirection = .natural
         paragraph.lineBreakMode = .byWordWrapping
-        paragraph.lineSpacing = size * 0.12
+        paragraph.lineSpacing = size * CGFloat(lineSpacing.isFinite ? min(0.4, max(0, lineSpacing)) : 0.12)
         return [.font: font(size: size, bold: bold), .foregroundColor: NSColor.white, .paragraphStyle: paragraph]
     }
 }
 
 struct CanvasTextLayout {
+    let bodyText: String
     let bodyFontSize: CGFloat
     let titleFontSize: CGFloat
     let footerFontSize: CGFloat
@@ -64,20 +87,35 @@ struct CanvasTextLayout {
         // its normal gap for an empty label; the placeholder is never drawn.
         let title = content.hasTitle ? content.title : (reserve && template.showsTitle ? "Ag" : "")
         let footer = content.hasFooter ? content.footer : (reserve && template.showsFooter ? "Ag" : "")
-        func metrics(scale: CGFloat) -> (title: CGFloat, body: CGFloat, footer: CGFloat, titleGap: CGFloat, footerGap: CGFloat) {
+        func metrics(bodyText: String, scale: CGFloat) -> (title: CGFloat, body: CGFloat, footer: CGFloat, titleGap: CGFloat, footerGap: CGFloat) {
             (measure(title, size: 34 * scale, width: width, style: style),
-             measure(content.body, size: preferred * scale, width: width, style: style),
+             measure(bodyText, size: preferred * scale, width: width, style: style),
              measure(footer, size: 28 * scale, width: width, style: style, bold: false),
              title.isEmpty ? 0 : 22 * scale, footer.isEmpty ? 0 : 22 * scale)
         }
-        var low: CGFloat = 0.001
-        var high: CGFloat = 1
-        for _ in 0..<16 {
-            let mid = (low + high) / 2
-            let m = metrics(scale: mid)
-            if m.title + m.body + m.footer + m.titleGap + m.footerGap <= maximumHeight { low = mid } else { high = mid }
+        func fit(_ bodyText: String, plan: LyricCompactor.Plan? = nil, minimum: CGFloat = 0.001) -> CGFloat {
+            func fits(_ scale: CGFloat) -> Bool {
+                let m = metrics(bodyText: bodyText, scale: scale)
+                return m.title + m.body + m.footer + m.titleGap + m.footerGap <= maximumHeight
+                    && (plan?.fits(style: style, size: preferred * scale, width: width) ?? true)
+            }
+            if fits(1) { return 1 }
+            var low = minimum, high: CGFloat = 1
+            for _ in 0..<16 {
+                let mid = (low + high) / 2
+                if fits(mid) { low = mid } else { high = mid }
+            }
+            return low
         }
-        let m = metrics(scale: low)
+        // Fit the original stanza first. A join must be possible without
+        // making its text smaller; then reclaim height while keeping pairs on
+        // one row. Measuring only at the preferred font missed long stanzas.
+        let baseline = fit(content.body)
+        let plan = LyricCompactor.plan(content.body, template: template, content: content,
+                                      style: style, width: width, size: preferred * baseline)
+        let bodyText = plan.text
+        let low = plan.joinedLines.isEmpty ? baseline : fit(bodyText, plan: plan, minimum: baseline)
+        let m = metrics(bodyText: bodyText, scale: low)
         let titleHeight = m.title, bodyHeight = m.body, footerHeight = m.footer
         let titleGap = m.titleGap, footerGap = m.footerGap
         let total = titleHeight + titleGap + bodyHeight + footerGap + footerHeight
@@ -87,7 +125,7 @@ struct CanvasTextLayout {
         case .center: y = (1080 - total) / 2
         case .bottom: y = 1026 - total
         }
-        return CanvasTextLayout(bodyFontSize: preferred * low, titleFontSize: 34 * low, footerFontSize: 28 * low,
+        return CanvasTextLayout(bodyText: bodyText, bodyFontSize: preferred * low, titleFontSize: 34 * low, footerFontSize: 28 * low,
             title: NSRect(x: 96, y: y, width: width, height: titleHeight),
             body: NSRect(x: 96, y: y + titleHeight + titleGap, width: width, height: bodyHeight),
             footer: NSRect(x: 96, y: y + titleHeight + titleGap + bodyHeight + footerGap, width: width, height: footerHeight))
@@ -99,18 +137,30 @@ extension CanvasTextLayout {
         let template = template.resolved(for: content)
         let content = template.contentForDisplay(content)
         var textStyle = style; textStyle.alignment = template.alignment
-        func fit(_ text: String, in region: TemplateRegion, preferred: CGFloat, bold: Bool = true) -> CGFloat {
+        let preferred = CGFloat(min(160, max(12, style.fontSize)))
+        func fit(_ text: String, in region: TemplateRegion, preferred: CGFloat, bold: Bool = true,
+                 plan: LyricCompactor.Plan? = nil, minimum: CGFloat = 0.000001) -> CGFloat {
             let rect = region.rect
+            func fits(_ size: CGFloat) -> Bool {
+                measure(text, size: size, width: rect.width, style: textStyle, bold: bold) <= rect.height
+                    && (plan?.fits(style: textStyle, size: size, width: rect.width) ?? true)
+            }
+            if fits(preferred) { return preferred }
             // Tiny boxes and valid snapshots with many explicit newlines may
             // need sub-point text. Do not impose a floor that lets it overflow.
-            var low: CGFloat = 0.000001, high = preferred
+            var low = minimum, high = preferred
             for _ in 0..<24 {
                 let mid = (low + high) / 2
-                if measure(text, size: mid, width: rect.width, style: textStyle, bold: bold) <= rect.height { low = mid } else { high = mid }
+                if fits(mid) { low = mid } else { high = mid }
             }
             return low
         }
-        return CanvasTextLayout(bodyFontSize: fit(content.body, in: template.effectiveBodyRegion, preferred: CGFloat(min(160, max(12, style.fontSize)))),
+        let baseline = fit(content.body, in: template.effectiveBodyRegion, preferred: preferred)
+        let plan = LyricCompactor.plan(content.body, template: template, content: content, style: textStyle,
+                                      width: template.effectiveBodyRegion.rect.width, size: baseline)
+        let bodySize = plan.joinedLines.isEmpty ? baseline : fit(plan.text, in: template.effectiveBodyRegion,
+            preferred: preferred, plan: plan, minimum: baseline)
+        return CanvasTextLayout(bodyText: plan.text, bodyFontSize: bodySize,
             titleFontSize: fit(content.title, in: template.titleRegion, preferred: 34),
             footerFontSize: fit(content.footer, in: template.footerRegion, preferred: 28, bold: false),
             title: template.titleRegion.rect, body: template.effectiveBodyRegion.rect, footer: template.footerRegion.rect)
@@ -123,6 +173,8 @@ final class OutputCanvas: NSView {
     private var cachedRevision: UInt64?
     private var cachedImage: NSImage?
     private var accessibleContent: DisplayContent?
+    private var accessibilitySource: DisplayContent?
+    private var accessibilityRevision: UInt64?
     // Convenience accessors for standalone rendering and tests.
     var content: DisplayContent {
         get { presentation.content }
@@ -150,7 +202,13 @@ final class OutputCanvas: NSView {
     }
     private func presentationDidChange() {
         needsDisplay = true
-        let content = presentation.template.contentForDisplay(self.content)
+        guard accessibilitySource != self.content || accessibilityRevision != presentation.revision else { return }
+        accessibilitySource = self.content; accessibilityRevision = presentation.revision
+        var content = presentation.template.contentForDisplay(self.content)
+        let layout = presentation.template.enabled
+            ? CanvasTextLayout.lowerThird(content: self.content, style: style, template: presentation.template)
+            : CanvasTextLayout.make(content: self.content, style: style, template: presentation.template)
+        content.body = layout.bodyText
         if accessibleContent != content {
             accessibleContent = content
             setAccessibilityLabel(content.visible ? [content.title, content.body, content.footer].filter { !$0.isEmpty }.joined(separator: "\n") : "Output blank — keying background")
@@ -261,7 +319,7 @@ final class OutputCanvas: NSView {
                 .draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading])
         }
         draw(content.title, rect: layout.title, size: layout.titleFontSize)
-        draw(content.body, rect: layout.body, size: layout.bodyFontSize)
+        draw(layout.bodyText, rect: layout.body, size: layout.bodyFontSize)
         draw(content.footer, rect: layout.footer, size: layout.footerFontSize, bold: false)
     }
     deinit { if let observation { presentation.removeObserver(observation) } }

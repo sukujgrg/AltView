@@ -19,12 +19,15 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     private var designReady = true
     private var designHasChanges = false
     private var appliedTemplate = LowerThirdTemplate()
+    private var localTemplatePolicy = TemplatePolicy.sender
     private let titleVisibility = UI.label("", size: 11, color: .secondaryLabelColor)
     private let footerVisibility = UI.label("", size: 11, color: .secondaryLabelColor)
     private let previewNote = UI.label("", size: 12, color: .secondaryLabelColor)
     private var localOwnerID: UUID?
-    func updateDesign(template: LowerThirdTemplate, applied: LowerThirdTemplate, style: OutputStyle, artwork: PNGArtwork?, ready: Bool, changed: Bool) {
+    func updateDesign(template: LowerThirdTemplate, applied: LowerThirdTemplate, style: OutputStyle, artwork: PNGArtwork?, ready: Bool, changed: Bool,
+                      policy: TemplatePolicy? = nil) {
         appliedTemplate = applied; designReady = ready; designHasChanges = changed
+        localTemplatePolicy = policy ?? template.textTemplate.policy
         var content = session.draft; content.visible = [content.title, content.body, content.footer].contains { !$0.isEmpty }
         draftPresentation.update(content: content, style: style, template: template, artwork: artwork, immediately: true)
         refresh()
@@ -362,7 +365,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     }
     private func refreshTemplatePicker() {
         let capabilities = remote ? session.status.templateCapabilities
-            : TemplateCapabilities(templates: TemplateDescriptor.builtIns, policy: draftPresentation.template.textTemplate.policy)
+            : TemplateCapabilities(templates: TemplateDescriptor.builtIns, policy: localTemplatePolicy)
         let entries = capabilities.templates ?? []
         let unavailable = session.draft.template.flatMap { capabilities.supports($0) ? nil : $0 }
         // Ordinary feedback and text editing must not rebuild an open menu.

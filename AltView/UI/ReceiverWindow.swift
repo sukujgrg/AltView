@@ -31,8 +31,10 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let presentation = CanvasPresentation()
     private lazy var output = OutputWindowController(presentation: presentation)
     private lazy var preview = OutputCanvas(presentation: presentation)
-    private let artworkStore = PNGArtworkStore()
+    private let artworkStore: PNGArtworkStore
     private var template = LowerThirdTemplate()
+    private var designs = TemplateDesignLibrary()
+    private var artworks: [UUID: PNGArtwork] = [:]
     private var artwork: PNGArtwork?
     private var artworkRevision = UUID()
     private var artworkBusy = false
@@ -105,8 +107,9 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var updatingDraft = false
 
     init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 0,
-         window: NSWindow? = nil) {
+         window: NSWindow? = nil, artworkStore: PNGArtworkStore = PNGArtworkStore()) {
         self.defaults = defaults; self.receiverPort = receiverPort
+        self.artworkStore = artworkStore
         customTextEnabled = defaults.bool(forKey: "customTextEnabled")
         let window = window ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -122,6 +125,9 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         if let data = defaults.data(forKey: "outputStyle"), let saved = try? JSONDecoder().decode(OutputStyle.self, from: data) { style = saved }
         if let data = defaults.data(forKey: "lowerThirdTemplate"),
            let saved = try? JSONDecoder().decode(LowerThirdTemplate.self, from: data) { template = saved.clamped() }
+        if let data = defaults.data(forKey: "templateDesignLibrary"),
+           let saved = try? JSONDecoder().decode(TemplateDesignLibrary.self, from: data) { designs = saved.clamped() }
+        else { designs = TemplateDesignLibrary(template: template, style: style) }
         server = ReceiverServer(receiverID: id) { [weak self] status in self?.update(status) }
         output.onReadinessChange = { [weak self] _ in self?.refreshOutputReadiness() }
         output.onChange = { [weak self] text in
@@ -139,7 +145,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         composer.prepareLocalPublish = { [weak self] content in
             guard let self, let editor = self.templateEditor else { return false }
             editor.finishEditing()
-            guard editor.canPublish else { self.showDesignPage(); return false }
+            guard editor.canPublish(content: content) else { self.showDesignPage(); return false }
             var snapshot = content; snapshot.visible = true
             snapshot = TemplateCapabilities(templates: TemplateDescriptor.builtIns).contentForSending(snapshot)
             self.pendingLocalContent = snapshot
@@ -149,11 +155,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         composer.cancelLocalPublish = { [weak self] in self?.cancelLocalPublish() }
         let editor = LowerThirdWindowController(artworkStore: artworkStore)
         templateEditor = editor
-        editor.onApplyStyle = { [weak self] value in
-            self?.style = value
-            self?.defaults.set(try? JSONEncoder().encode(value), forKey: "outputStyle")
-        }
-        editor.onApply = { [weak self] value, artwork in self?.applyDesign(value, artwork: artwork) }
+        editor.onApplyLibrary = { [weak self] value, assets in self?.applyDesigns(value, artworks: assets) }
         editor.onDraftChange = { [weak self] in self?.refreshDraft() }
         editor.onEditText = { [weak self] in self?.showComposerPage(); self?.composer.focusTitle() }
         buildInterface()
@@ -331,7 +333,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         if let pending = pendingLocalContent, status.ownerID == composer.senderID, status.content == pending {
             pendingLocalContent = nil
             templateEditor?.setPublishing(false)
-            templateEditor?.applyChanges()
+            templateEditor?.applyDraft(for: pending)
         }
         refreshCanvas()
         if status.listening, let port = status.port, let key = pairingKey {
@@ -537,9 +539,19 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             ? OutputReadiness.unavailable : output.readiness
         server.updateOutputReadiness(readiness)
     }
+    private var outputDesignContent: DisplayContent {
+        let content = receiverStatus.content
+        // A sender may hide with an empty snapshot. Keep the last visible
+        // profile's artwork and typography while that composition exits.
+        return !content.visible && receiverStatus.ownerName != nil && presentation.displayedContent.visible
+            ? presentation.displayedContent : content
+    }
     private func refreshCanvas() {
-        server.updateTemplatePolicy(template.textTemplate.policy)
+        server.updateTemplatePolicy(designs.selection.policy)
         var content = receiverStatus.content
+        let design = designs.design(for: outputDesignContent)
+        template = design.template; style = design.style
+        artwork = template.assetID.flatMap { artworks[$0] }
         let unavailable = template.requiresCustomArtwork && artwork == nil
         if unavailable || receiverStatus.ownerName == nil { content = .empty }
         let displayed = template.contentForDisplay(content)
@@ -562,7 +574,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             fitLabel.stringValue = "\(preset)16:9 canvas · White foreground · Key colour #\(style.background)"
         }
         composer?.updateLocalOutput(owner: receiverStatus.ownerName, ownerID: receiverStatus.ownerID, notice: unavailable ? fitLabel.stringValue : "")
-        templateEditor?.update(template: template, style: style, artwork: artwork, busy: artworkBusy, message: artworkMessage)
+        templateEditor?.update(library: designs, artworks: artworks, busy: artworkBusy, message: artworkMessage)
         refreshOutputReadiness()
         refreshDraft()
     }
@@ -572,20 +584,19 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         defer { updatingDraft = false }
         editor.updateContent(draft: composer.draft, source: receiverStatus.content,
                              externalSource: receiverStatus.ownerID == composer.senderID ? nil : receiverStatus.ownerName,
-                             customTextEnabled: customTextEnabled)
-        composer.updateDesign(template: editor.template, applied: template, style: editor.style,
-                              artwork: editor.draftArtwork, ready: editor.canPublish, changed: editor.hasChanges)
+                             customTextEnabled: customTextEnabled, outputContent: outputDesignContent)
+        let draft = editor.draftLibrary ?? designs
+        let design = draft.design(for: composer.draft)
+        composer.updateDesign(template: design.template, applied: designs.design(for: composer.draft).template, style: design.style,
+                              artwork: design.template.assetID.flatMap { editor.allDraftArtworks[$0] },
+                              ready: editor.canPublish(content: composer.draft), changed: editor.hasChanges,
+                              policy: draft.selection.policy)
     }
     private func cancelLocalPublish() {
         pendingLocalContent = nil
         templateEditor?.setPublishing(false)
     }
     @objc func showDesignPage() { showPage("design") }
-    private func saveTemplate() {
-        template = template.clamped()
-        defaults.set(try? JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
-        refreshCanvas()
-    }
     func windowShouldClose(_ sender: NSWindow) -> Bool { templateEditor?.windowShouldClose(sender) ?? true }
     func confirmTermination() -> NSApplication.TerminateReply {
         guard let editor = templateEditor, editor.needsCloseConfirmation else { return .terminateNow }
@@ -593,31 +604,43 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         return .terminateLater
     }
     private func loadArtwork() {
-        guard let id = template.assetID else { return }
+        let ids = designs.assetIDs
+        guard !ids.isEmpty else { return }
         let revision = UUID(); artworkRevision = revision
         artworkBusy = true; artworkMessage = "Loading saved PNG…"
         refreshCanvas()
-        artworkStore.load(id: id, name: template.assetName ?? "Imported PNG") { [weak self] result in
-            guard let self, self.artworkRevision == revision else { return }
-            self.artworkBusy = false
-            switch result {
-            case .success(let value): self.artwork = value; self.artworkMessage = "PNG saved in AltView. The original file is no longer needed."
-            case .failure: self.artworkMessage = "Saved PNG is unavailable. Choose PNG… to import it again."
+        var remaining = ids
+        for id in ids {
+            let name = DesignProfileID.allCases.compactMap { profile -> String? in
+                let value = designs[profile].template
+                return value.assetID == id ? value.assetName : nil
+            }.first ?? "Imported PNG"
+            artworkStore.load(id: id, name: name) { [weak self] result in
+                guard let self, self.artworkRevision == revision else { return }
+                remaining.remove(id)
+                if case .success(let value) = result { self.artworks[id] = value }
+                self.artworkBusy = !remaining.isEmpty
+                self.artworkMessage = ""
+                self.refreshCanvas()
             }
-            self.refreshCanvas()
         }
     }
-    private func applyDesign(_ value: LowerThirdTemplate, artwork: PNGArtwork?) {
-        let previous = template.assetID
-        template = value
-        if previous != value.assetID {
-            // A draft import supersedes any in-flight load of the old asset.
-            artworkRevision = UUID(); artworkBusy = false
-        }
-        self.artwork = artwork
+    private func applyDesigns(_ value: TemplateDesignLibrary, artworks: [UUID: PNGArtwork]) {
+        let previous = designs.assetIDs
+        designs = value.clamped()
+        artworkRevision = UUID(); artworkBusy = false
+        self.artworks = artworks
         artworkMessage = ""
-        saveTemplate()
-        if let previous, previous != value.assetID { artworkStore.discard(id: previous) }
+        defaults.set(try? JSONEncoder().encode(designs), forKey: "templateDesignLibrary")
+        // Keep the previous preference keys readable for older builds.
+        let custom = designs.design(.custom)
+        var legacy = custom.template; legacy.textTemplate = designs.selection
+        defaults.set(try? JSONEncoder().encode(legacy), forKey: "lowerThirdTemplate")
+        defaults.set(try? JSONEncoder().encode(custom.style), forKey: "outputStyle")
+        refreshCanvas()
+        // A migrated PNG can belong to several templates. Delete only when
+        // no saved profile references it anymore.
+        for id in previous.subtracting(designs.assetIDs) { artworkStore.discard(id: id) }
     }
     func shutdown() {
         stopped = true

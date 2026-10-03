@@ -1570,6 +1570,299 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(font.titleOfSelectedItem, "System")
     }
 
+    func testApplyChecksOutputArtworkAndExplainsWhichProfileNeedsRepair() throws {
+        let editor = LowerThirdWindowController()
+        defer { editor.shutdown() }
+        var library = TemplateDesignLibrary()
+        library.lyrics.template.enabled = true; library.lyrics.template.artwork = .custom
+        library.lyrics.template.assetID = UUID(); library.lyrics.template.assetName = "missing-lyrics.png"
+        editor.update(library: library, artworks: [:], busy: false, message: "")
+        let root = editor.contentView
+        let policy = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text template" })
+        var saved: TemplateDesignLibrary?
+        editor.onApplyLibrary = { value, _ in saved = value }
+
+        // A fixed policy must be checked even with no active source.
+        policy.selectItem(withTitle: "Lyrics"); policy.sendAction(policy.action, to: policy.target)
+        XCTAssertEqual(editor.editingProfile, .custom)
+        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue.contains("Lyrics PNG unavailable") && $0.stringValue.contains("Edit template")
+        })
+        editor.applyChanges()
+        XCTAssertNil(saved)
+        XCTAssertTrue(editor.hasChanges, "A failed Apply must preserve the draft and baseline")
+        editor.revertChanges()
+        XCTAssertEqual(editor.draftLibrary?.selection, .sender)
+
+        // Following the sender must validate the actual source, not the editor sample.
+        editor.updateContent(draft: DisplayContent(body: "Local draft"),
+                             source: DisplayContent(body: "Song", template: .lyrics), externalSource: "Lyric sender")
+        try button("Title", in: root).performClick(nil)
+        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        editor.applyChanges()
+        XCTAssertNil(saved)
+        editor.selectProfile(.lyrics)
+        try button("Artwork", in: root).performClick(nil)
+        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        editor.applyChanges()
+        XCTAssertFalse(try XCTUnwrap(saved).lyrics.template.showsArtwork)
+        XCTAssertFalse(editor.hasChanges)
+    }
+
+    func testCustomFontAndSizeEditsPreserveAlignmentInBothLayouts() throws {
+        let editor = LowerThirdWindowController()
+        defer { editor.shutdown() }
+        var template = LowerThirdTemplate(); template.enabled = true
+        editor.update(library: TemplateDesignLibrary(template: template), artworks: [:], busy: false, message: "")
+        let root = editor.contentView
+        func picker(_ label: String) throws -> NSPopUpButton {
+            try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == label })
+        }
+        let lowerAlignment = try picker("Lower third text alignment")
+        lowerAlignment.selectItem(withTitle: "Right"); lowerAlignment.sendAction(lowerAlignment.action, to: lowerAlignment.target)
+        let font = try picker("Draft font")
+        font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
+        let size = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSlider }.first { $0.accessibilityLabel() == "Draft font size" })
+        size.doubleValue = 110; size.sendAction(size.action, to: size.target)
+        XCTAssertEqual(editor.style.fontName, "Georgia")
+        XCTAssertEqual(editor.style.fontSize, 110)
+        XCTAssertEqual(editor.template.alignment, .right)
+        XCTAssertEqual(lowerAlignment.titleOfSelectedItem, "Right")
+        XCTAssertEqual(editor.style.alignment, .center, "Typography edits must retain the full-canvas alignment too")
+
+        try button("Use lower-third layout", in: root).performClick(nil)
+        let fullAlignment = try picker("Draft text alignment")
+        fullAlignment.selectItem(withTitle: "Left"); fullAlignment.sendAction(fullAlignment.action, to: fullAlignment.target)
+        font.selectItem(withTitle: "Helvetica"); font.sendAction(font.action, to: font.target)
+        size.doubleValue = 96; size.sendAction(size.action, to: size.target)
+        XCTAssertEqual(editor.style.alignment, .left)
+        XCTAssertEqual(fullAlignment.titleOfSelectedItem, "Left")
+        let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        XCTAssertEqual(preview.style.forDisplay(content: preview.content, template: preview.presentation.template).alignment, .left)
+    }
+
+    func testLocalPublicationCommitsHealthyDesignWhileEditingMissingArtwork() throws {
+        let domain = "AltViewTests.HealthyProfilePublication.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defaults.set(true, forKey: "customTextEnabled")
+        var library = TemplateDesignLibrary()
+        library.lyrics.template.enabled = true; library.lyrics.template.artwork = .custom
+        library.lyrics.template.assetID = UUID(); library.lyrics.template.assetName = "missing-lyrics.png"
+        try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
+        let content = DisplayContent(body: "Healthy Custom publication")
+        try defaults.set(JSONEncoder().encode(content), forKey: "customTextDraft")
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        eventually("receiver ready") { controller.receiverStatus.listening }
+        var status = SenderStatus()
+        let sender = SenderClient(name: "Missing Lyrics fixture") { status = $0 }
+        defer { sender.disconnect() }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
+        eventually("fixture connected") { status.connected }
+        sender.submit(DisplayContent(body: "Unavailable old source", template: .lyrics)); sender.takeOutput()
+        eventually("old lyric source active") { controller.receiverStatus.ownerName == "Missing Lyrics fixture" }
+
+        controller.showDesignPage()
+        let profiles = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        eventually("artwork load finished") { profiles.isEnabled }
+        profiles.selectItem(withTitle: "Lyrics"); profiles.sendAction(profiles.action, to: profiles.target)
+        let font = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Draft font" })
+        font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
+        let editor = try XCTUnwrap(try button("Choose PNG…", in: root).target as? LowerThirdWindowController)
+        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        controller.showComposerPage()
+        let publish = try button("Publish Text & Design", in: root)
+        XCTAssertTrue(publish.isEnabled)
+        publish.performClick(nil)
+        eventually("healthy text accepted and staged designs saved") {
+            guard let data = defaults.data(forKey: "templateDesignLibrary"),
+                  let saved = try? JSONDecoder().decode(TemplateDesignLibrary.self, from: data) else { return false }
+            return controller.receiverStatus.content == content && saved.lyrics.style.fontName == "Georgia" && !editor.hasChanges
+        }
+        controller.showReceiverPage()
+        let output = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        XCTAssertTrue(output.content.visible)
+        XCTAssertEqual(output.content.body, content.body)
+        XCTAssertEqual(output.presentation.template.textTemplate, .custom)
+    }
+
+    func testIndependentTemplateDraftsApplyAndRevertTogether() throws {
+        let editor = LowerThirdWindowController()
+        defer { editor.shutdown() }
+        var baseline = LowerThirdTemplate(); baseline.enabled = true
+        let library = TemplateDesignLibrary(template: baseline)
+        editor.update(library: library, artworks: [:], busy: false, message: "")
+        let root = editor.contentView
+        func picker(_ label: String) throws -> NSPopUpButton {
+            try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == label })
+        }
+        let profile = try picker("Edit template"), policy = try picker("Text template")
+        let font = try picker("Draft font"), alignment = try picker("Lower third text alignment")
+        let lineLayout = try picker("Lyrics line layout")
+        let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        profile.selectItem(withTitle: "Lyrics"); profile.sendAction(profile.action, to: profile.target)
+        XCTAssertFalse(editor.hasChanges, "Selecting a profile is private navigation")
+        XCTAssertEqual(policy.titleOfSelectedItem, "From sending app")
+        XCTAssertEqual(preview.presentation.template.textTemplate, .lyrics)
+        font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
+        lineLayout.selectItem(withTitle: "Compact pairs"); lineLayout.sendAction(lineLayout.action, to: lineLayout.target)
+        alignment.selectItem(withTitle: "Right"); alignment.sendAction(alignment.action, to: alignment.target)
+        try button("Title", in: root).performClick(nil)
+        XCTAssertTrue(editor.template.showsTitle, "Built-in templates now allow row customization")
+        var applied: TemplateDesignLibrary?
+        editor.onApplyLibrary = { value, _ in applied = value }
+        profile.selectItem(withTitle: "Scripture"); profile.sendAction(profile.action, to: profile.target)
+        XCTAssertEqual(font.titleOfSelectedItem, "System")
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Left")
+        XCTAssertEqual(editor.template.lyricLineLayout, .preserve)
+        try button("Fit to Canvas", in: root).performClick(nil)
+        editor.update(library: library, artworks: [:], busy: false, message: "")
+        profile.selectItem(withTitle: "Lyrics"); profile.sendAction(profile.action, to: profile.target)
+        XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
+        XCTAssertEqual(lineLayout.titleOfSelectedItem, "Compact pairs")
+        XCTAssertEqual(alignment.titleOfSelectedItem, "Right")
+        XCTAssertTrue(editor.template.showsTitle)
+        XCTAssertNil(applied)
+        editor.applyChanges()
+        let saved = try XCTUnwrap(applied)
+        XCTAssertEqual(saved.lyrics.style.fontName, "Georgia")
+        XCTAssertEqual(saved.lyrics.template.lyricLineLayout, .compact)
+        XCTAssertEqual(saved.scripture.template.artworkRegion.width, 100)
+        XCTAssertEqual(saved.custom.template.artworkRegion.width, 90)
+        XCTAssertEqual(saved.selection, .sender)
+        XCTAssertFalse(editor.hasChanges)
+        font.selectItem(withTitle: "Helvetica"); font.sendAction(font.action, to: font.target)
+        profile.selectItem(withTitle: "Scripture"); profile.sendAction(profile.action, to: profile.target)
+        try button("Reset All Positions", in: root).performClick(nil)
+        editor.revertChanges()
+        XCTAssertEqual(editor.template.artworkRegion.width, 100)
+        profile.selectItem(withTitle: "Lyrics"); profile.sendAction(profile.action, to: profile.target)
+        XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
+        XCTAssertFalse(editor.hasChanges)
+    }
+
+    func testTemplateArtworkSurvivesOtherProfileUpdatesRestartAndSenderChanges() throws {
+        let domain = "AltViewTests.TemplateArtwork.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(domain)
+        let store = PNGArtworkStore(directory: directory.appendingPathComponent("Stored"))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { defaults.removePersistentDomain(forName: domain); try? FileManager.default.removeItem(at: directory) }
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let original = directory.appendingPathComponent("original.png")
+        try png.write(to: original)
+        var migratedAsset: PNGArtwork?
+        let imported = expectation(description: "legacy artwork imported")
+        store.importPNG(from: original) { result in migratedAsset = try? result.get(); imported.fulfill() }
+        wait(for: [imported], timeout: 3)
+        let old = try XCTUnwrap(migratedAsset)
+        var template = LowerThirdTemplate(); template.enabled = true; template.artwork = .custom
+        template.assetID = old.id; template.assetName = old.name
+        try defaults.set(JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, artworkStore: store)
+        defer { controller.shutdown(); controller.close() }
+        controller.showDesignPage()
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let profiles = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        eventually("migrated artwork loaded") { profiles.isEnabled }
+        profiles.selectItem(withTitle: "Lyrics"); profiles.sendAction(profiles.action, to: profiles.target)
+        let choose = try button("Choose PNG…", in: root)
+        // Use the real importer without opening a file chooser in the test.
+        let editor = try XCTUnwrap(choose.target as? LowerThirdWindowController)
+        editor.importArtwork(from: original)
+        eventually("lyric artwork imported") { editor.template.assetID != old.id && editor.canPublish }
+        let lyricsID = try XCTUnwrap(editor.template.assetID)
+        editor.applyChanges()
+        profiles.selectItem(withTitle: "Scripture"); profiles.sendAction(profiles.action, to: profiles.target)
+        XCTAssertEqual(editor.template.assetID, old.id)
+        try button("Fit to Canvas", in: root).performClick(nil)
+        editor.applyChanges()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Stored/\(old.id.uuidString).png").path),
+                      "A shared artwork must not be deleted when Lyrics replaces its copy")
+        try FileManager.default.removeItem(at: original)
+        controller.shutdown(); controller.close()
+
+        let restarted = ReceiverWindowController(defaults: defaults, pairingKey: key, artworkStore: store)
+        defer { restarted.shutdown(); restarted.close() }
+        restarted.showDesignPage()
+        let restartedRoot = try XCTUnwrap(restarted.window?.contentView)
+        let picker = try XCTUnwrap(descendants(restartedRoot).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        eventually("saved profile artwork reloaded") { picker.isEnabled && restarted.receiverStatus.listening }
+        for (name, id) in [("Lyrics", lyricsID), ("Scripture", old.id), ("Custom", old.id)] {
+            picker.selectItem(withTitle: name); picker.sendAction(picker.action, to: picker.target)
+            let savedEditor = try XCTUnwrap(try button("Choose PNG…", in: restartedRoot).target as? LowerThirdWindowController)
+            XCTAssertEqual(savedEditor.template.assetID, id)
+            XCTAssertEqual(savedEditor.draftArtwork?.id, id)
+        }
+        var status = SenderStatus()
+        let sender = SenderClient(name: "Template fixture") { status = $0 }
+        defer { sender.disconnect() }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: restarted.receiverStatus.port!)!), key: key)
+        eventually("fixture sender connected") { status.connected }
+        restarted.showReceiverPage()
+        let outputPreview = try XCTUnwrap(descendants(restartedRoot).compactMap { $0 as? OutputCanvas }.first)
+        for (request, id) in [(ContentTemplate.lyrics, lyricsID), (.scripture, old.id), (.lyrics, lyricsID)] {
+            let content = DisplayContent(body: "Original\nphrasing", template: request)
+            sender.submit(content); sender.takeOutput()
+            eventually("sender selects saved \(request.name) design") {
+                outputPreview.presentation.artwork?.id == id && restarted.receiverStatus.content == content
+            }
+        }
+        outputPreview.presentation.stopAnimation()
+        sender.submit(.empty)
+        eventually("empty snapshot hides the owned composition") { restarted.receiverStatus.content == .empty }
+        XCTAssertEqual(outputPreview.presentation.artwork?.id, lyricsID, "An empty hide must retain the exiting Lyrics artwork")
+        XCTAssertEqual(outputPreview.presentation.template.textTemplate, .lyrics)
+        XCTAssertEqual(outputPreview.presentation.displayedContent.template, .lyrics)
+    }
+
+    func testTemplateDesignFitsCompactWorkspace() throws {
+        let domain = "AltViewTests.TemplateDesignLayout.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defaults.set(true, forKey: "customTextEnabled")
+        var library = TemplateDesignLibrary()
+        library.lyrics.template.enabled = true; library.lyrics.template.lyricLineLayout = .compact
+        library.lyrics.style.fontSize = 60; library.background = "00FF00"
+        try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
+        try defaults.set(JSONEncoder().encode(DisplayContent(body: "You are the light\nthat guides me home\nYou are the hope\nthat makes me whole", template: .lyrics)), forKey: "customTextDraft")
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate())
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        controller.showDesignPage()
+        let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
+        window.setContentSize(NSSize(width: 980, height: 650))
+        let profiles = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        let samples = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Design preview content" })
+        profiles.selectItem(withTitle: "Lyrics"); profiles.sendAction(profiles.action, to: profiles.target)
+        samples.selectItem(withTitle: "Text draft"); samples.sendAction(samples.action, to: samples.target)
+        window.orderFrontRegardless()
+        for (name, appearance) in [("Light", NSAppearance.Name.aqua), ("Dark", .darkAqua)] {
+            window.appearance = NSAppearance(named: appearance)
+            root.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+            XCTAssertEqual(preview.bounds.width / preview.bounds.height, 16.0 / 9, accuracy: 0.01)
+            XCTAssertGreaterThan(preview.bounds.width, 400)
+            for control in [profiles as NSView, try button("Apply Design to Output", in: root), try button("Revert Changes", in: root)] {
+                XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
+            }
+            XCTAssertEqual(preview.accessibilityLabel(), "You are the light that guides me home\nYou are the hope that makes me whole")
+            let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+            try XCTUnwrap(window.appearance).performAsCurrentDrawingAppearance {
+                root.cacheDisplay(in: root.bounds, to: bitmap)
+            }
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+            attachment.name = "TemplateDesign-980-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+    }
+
     func testDesignAppearanceRevertAndInvalidLayoutBlockPublication() throws {
         let editor = LowerThirdWindowController()
         defer { editor.shutdown() }
