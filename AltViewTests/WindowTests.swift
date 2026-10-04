@@ -1811,7 +1811,12 @@ final class WindowTests: XCTestCase {
         try FileManager.default.removeItem(at: original)
         controller.shutdown(); controller.close()
 
-        let restarted = ReceiverWindowController(defaults: defaults, pairingKey: key, artworkStore: store)
+        // Network delivery and AppKit layout can outlast the short exit animation.
+        // Control its clock and Reduce Motion setting while checking the exiting scene.
+        var now: TimeInterval = 10
+        let presentation = CanvasPresentation(clock: { now }, reduceMotion: { false })
+        let restarted = ReceiverWindowController(defaults: defaults, pairingKey: key, artworkStore: store,
+                                                 presentation: presentation)
         defer { restarted.shutdown(); restarted.close() }
         restarted.showDesignPage()
         let restartedRoot = try XCTUnwrap(restarted.window?.contentView)
@@ -1843,6 +1848,13 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(outputPreview.presentation.artwork?.id, lyricsID, "An empty hide must retain the exiting Lyrics artwork")
         XCTAssertEqual(outputPreview.presentation.template.textTemplate, .lyrics)
         XCTAssertEqual(outputPreview.presentation.displayedContent.template, .lyrics)
+        XCTAssertEqual(presentation.motion.target, 0)
+        XCTAssertEqual(presentation.progress, 1)
+        now += presentation.template.duration / 2
+        XCTAssertEqual(presentation.progress, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(presentation.displayedContent.template, .lyrics)
+        now += presentation.template.duration
+        eventually("completed exit clears displayed text") { presentation.displayedContent == .empty }
     }
 
     func testTemplateDesignFitsCompactWorkspace() throws {

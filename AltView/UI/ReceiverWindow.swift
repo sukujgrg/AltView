@@ -28,7 +28,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var localWaiters: [(Result<LocalReceiverConnection, Error>) -> Void] = []
     private var starting = false
     private var server: ReceiverServer!
-    private let presentation = CanvasPresentation()
+    private let presentation: CanvasPresentation
     private lazy var output = OutputWindowController(presentation: presentation)
     private lazy var preview = OutputCanvas(presentation: presentation)
     private let artworkStore: PNGArtworkStore
@@ -107,9 +107,10 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var updatingDraft = false
 
     init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 0,
-         window: NSWindow? = nil, artworkStore: PNGArtworkStore = PNGArtworkStore()) {
+         window: NSWindow? = nil, artworkStore: PNGArtworkStore = PNGArtworkStore(),
+         presentation: CanvasPresentation = CanvasPresentation()) {
         self.defaults = defaults; self.receiverPort = receiverPort
-        self.artworkStore = artworkStore
+        self.artworkStore = artworkStore; self.presentation = presentation
         customTextEnabled = defaults.bool(forKey: "customTextEnabled")
         let window = window ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
