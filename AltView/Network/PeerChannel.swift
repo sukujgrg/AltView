@@ -12,6 +12,7 @@ enum AltViewLog {
         case .posix(let code): return "posix:\(code.rawValue)"
         case .dns(let code): return "dns:\(code)"
         case .tls(let code): return "tls:\(code)"
+        case .wifiAware(let code): return "wifi_aware:\(code)"
         @unknown default: return "unknown"
         }
     }

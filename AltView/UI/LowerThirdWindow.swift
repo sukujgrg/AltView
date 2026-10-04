@@ -33,7 +33,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
     private let fullAlignmentPicker = NSPopUpButton()
     private let textTemplatePicker = NSPopUpButton()
     private let textTemplateHint = UI.label("", size: 11, color: .secondaryLabelColor)
-    private let profilePicker = NSPopUpButton()
+    private let profileSelector = NSSegmentedControl()
     private var profileControls: NSView!
     private let lineLayoutPicker = NSPopUpButton()
     private let joinerPicker = NSPopUpButton()
@@ -59,7 +59,6 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
     private var fullLayout: NSView!
     private var lowerAlignment: NSView!
     private var artworkSection: NSView!
-    private var artworkSizing: NSView!
     private var animationSection: NSView!
     private var resetLayoutRow: NSView!
     private var regionGrid: NSGridView!
@@ -81,7 +80,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
     private var outputArtworkWarning: String? {
         guard !loading, let library = draftLibrary, !artworkIsAvailable(for: outputContent) else { return nil }
         let name = library.profileID(for: outputContent).rawValue
-        return "\(name) PNG unavailable. Select \(name) in Edit template to replace the PNG, use Built-in banner, or hide Artwork."
+        return "\(name) PNG unavailable. Select \(name) in Editing template to replace the PNG, use Built-in banner, or hide Artwork."
     }
     func finishEditing() { hostWindow?.makeFirstResponder(nil) }
     func setPublishing(_ value: Bool) { publishing = value; if value { colorWell.deactivate() }; refresh() }
@@ -139,6 +138,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
     private let bodyLayoutHint = UI.label("", size: 11, color: .secondaryLabelColor)
     private let feedback = UI.label("", size: 12, color: .secondaryLabelColor)
     private let draftStatus = UI.label("", size: 12, color: .secondaryLabelColor)
+    private let draftScope = UI.label("", size: 11, color: .secondaryLabelColor)
     private let draftBadge = StatusBadge("APPLIED")
     private var chooseButton: NSButton!
     private var applyButton: NSButton!
@@ -203,8 +203,15 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         filename.maximumNumberOfLines = 2
         filename.lineBreakMode = .byTruncatingMiddle
         status.maximumNumberOfLines = 0
+        bannerButton.controlSize = .small; canvasButton.controlSize = .small
+        bannerButton.font = .systemFont(ofSize: 11); canvasButton.font = .systemFont(ofSize: 11)
+        bannerButton.toolTip = "Fit only this template’s artwork box to the lower-third banner area."
+        canvasButton.toolTip = "Fit only this template’s artwork box to the full canvas."
+        let artworkSizing = UI.column(UI.separator(), UI.label("Placement", size: 11, bold: true),
+            UI.label("Fits the artwork box only.", size: 11, color: .secondaryLabelColor),
+            UI.row(bannerButton, canvasButton, NSView()), spacing: 8)
         artworkSection = UI.card("Artwork", content: UI.column(
-            artworkPicker, UI.row(chooseButton, NSView()), filename, status, spacing: 10))
+            artworkPicker, UI.row(chooseButton, NSView()), filename, status, artworkSizing, spacing: 10))
         animationSection = UI.card("Animation", content: UI.column(
             UI.row(animationPicker, duration, UI.label("sec", size: 11), NSView()),
             UI.label("0.1–2 seconds. Respects Reduce Motion.", size: 11, color: .secondaryLabelColor), spacing: 8))
@@ -220,14 +227,22 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         fullAlignmentPicker.addItems(withTitles: CanvasAlignment.allCases.map(\.rawValue))
         fullAlignmentPicker.setAccessibilityLabel("Draft text alignment")
         textTemplatePicker.addItems(withTitles: TextTemplateSelection.allCases.map(\.rawValue))
-        textTemplatePicker.setAccessibilityLabel("Text template")
+        textTemplatePicker.setAccessibilityLabel("Output template")
         textTemplatePicker.target = self; textTemplatePicker.action = #selector(textTemplateChanged)
         textTemplateHint.maximumNumberOfLines = 0
-        profilePicker.addItems(withTitles: DesignProfileID.allCases.map(\.rawValue))
-        profilePicker.setAccessibilityLabel("Edit template")
-        profilePicker.target = self; profilePicker.action = #selector(profileChanged)
-        profileControls = UI.column(UI.label("Edit template", size: 11, bold: true), profilePicker,
-            UI.label("Each template remembers its own artwork and design. Key colour is shared. Editing stays private until Apply.", size: 11, color: .secondaryLabelColor), spacing: 6)
+        profileSelector.segmentCount = DesignProfileID.allCases.count
+        profileSelector.trackingMode = .selectOne
+        profileSelector.segmentStyle = .rounded
+        profileSelector.segmentDistribution = .fillEqually
+        for (index, id) in DesignProfileID.allCases.enumerated() {
+            profileSelector.setLabel(id.rawValue, forSegment: index)
+            profileSelector.setWidth(0, forSegment: index)
+        }
+        profileSelector.setAccessibilityLabel("Editing template")
+        profileSelector.setAccessibilityIdentifier("editingTemplate")
+        profileSelector.target = self; profileSelector.action = #selector(profileChanged)
+        profileControls = UI.card("Editing template", content: UI.column(profileSelector,
+            UI.label("Switching templates keeps your drafts.", size: 11, color: .secondaryLabelColor), spacing: 8))
         lineLayoutPicker.addItems(withTitles: LyricLineLayout.allCases.map(\.rawValue))
         lineLayoutPicker.setAccessibilityLabel("Lyrics line layout")
         joinerPicker.addItems(withTitles: LyricJoiner.allCases.map(\.rawValue))
@@ -278,20 +293,25 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         regionGrid = grid
         grid.columnSpacing = 6; grid.rowSpacing = 8
         grid.xPlacement = .leading; grid.yPlacement = .center
-        bannerButton.controlSize = .small; canvasButton.controlSize = .small
-        bannerButton.font = .systemFont(ofSize: 11); canvasButton.font = .systemFont(ofSize: 11)
-        let reset = UI.button("Reset All Positions", target: self, action: #selector(resetLayout))
+        let reset = UI.button("Reset This Template’s Positions", target: self, action: #selector(resetLayout))
         reset.controlSize = .small; reset.font = .systemFont(ofSize: 11)
-        artworkSizing = UI.column(UI.separator(), UI.label("Artwork size", size: 11, color: .secondaryLabelColor),
-            UI.row(bannerButton, canvasButton, NSView()), spacing: 10)
+        reset.setAccessibilityIdentifier("resetTemplatePositions")
+        reset.toolTip = "Restore artwork, title, body and footer boxes for the template being edited. Apply to save; Revert All Changes to undo."
         resetLayoutRow = UI.row(reset, NSView())
         let layout = UI.card("Layout", content: UI.column(grid, bodyLayoutHint,
-            artworkSizing, resetLayoutRow, spacing: 10))
-        let textTemplates = UI.card("Text template", content: UI.column(
-            UI.label("Use on output", size: 11, bold: true), textTemplatePicker, textTemplateHint, profileControls, spacing: 8))
-        let inspector = UI.scrolling(UI.column(textTemplates, composition, typography, artworkSection, animationSection, layout, spacing: 12))
+            resetLayoutRow, spacing: 10))
+        let outputTemplates = UI.card("Output template", content: UI.column(
+            textTemplatePicker, textTemplateHint, spacing: 8))
+        let inspectorScroll = UI.scrolling(UI.column(outputTemplates, composition, typography, artworkSection, animationSection, layout, spacing: 12))
+        inspectorScroll.setAccessibilityLabel("Design inspector")
+        // Keep template navigation visible while its settings scroll.
+        let inspector = UI.column(profileControls, inspectorScroll, spacing: 12)
+        inspector.distribution = .fill
+        inspector.setHuggingPriority(.defaultLow, for: .vertical)
+        inspector.setHuggingPriority(.required, for: .horizontal)
         inspector.widthAnchor.constraint(equalToConstant: 340).isActive = true
-        inspector.setAccessibilityLabel("Design inspector")
+        inspectorScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        profileControls.setContentHuggingPriority(.required, for: .vertical)
 
         samplePicker.addItems(withTitles: ["Speaker", "Announcement", "Long message", "Scripture", "Lyrics"])
         samplePicker.target = self; samplePicker.action = #selector(previewChanged)
@@ -329,13 +349,21 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         applyButton = UI.primaryButton("Apply Design to Output", target: self, action: #selector(applyChanges))
         applyButton.setAccessibilityIdentifier("applyLowerThird")
         applyButton.keyEquivalent = "s"; applyButton.keyEquivalentModifierMask = [.command]
-        revertButton = UI.button("Revert Changes", target: self, action: #selector(revertChanges))
+        applyButton.toolTip = "Save all pending template changes, shared key colour and output selection on this Mac."
+        revertButton = UI.button("Revert All Changes", target: self, action: #selector(revertChanges))
+        revertButton.toolTip = "Discard all pending template changes, shared key colour and output selection."
         draftBadge.setAccessibilityIdentifier("designDraftStatus")
         draftStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        draftScope.setAccessibilityIdentifier("designChangeScope")
+        draftScope.maximumNumberOfLines = 2
         let actions = UI.row(draftBadge, draftStatus, NSView(), revertButton, applyButton)
         actions.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
+        let footer = UI.column(draftScope, actions, spacing: 6)
+        footer.setHuggingPriority(.required, for: .vertical)
         let heading = UI.pageHeading("Design", subtitle: "Set the appearance of this Mac’s output. Apply when you’re ready.")
-        let root = UI.column(heading, body, UI.separator(), actions, spacing: 16)
+        let footerDivider = UI.separator()
+        let root = UI.column(heading, body, footerDivider, footer, spacing: 16)
+        root.setCustomSpacing(8, after: footerDivider)
         root.distribution = .fill
         editorRoot = NSView()
         UI.fill(root, in: editorRoot, padding: 0)
@@ -429,8 +457,8 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             textTemplateHint.stringValue = library.selection == .sender
                 ? "Incoming text selects its saved template. Messages without a template use Custom."
                 : "Incoming text uses the selected template. Apply to change output."
-            profilePicker.selectItem(withTitle: editingProfile.rawValue)
-            profilePicker.isEnabled = !importing && !loading
+            profileSelector.selectedSegment = DesignProfileID.allCases.firstIndex(of: editingProfile) ?? 0
+            profileSelector.isEnabled = !importing && !loading
         }
         lyricControls.isHidden = preset != .lyrics
         lineLayoutPicker.selectItem(withTitle: template.lyricLineLayout.rawValue)
@@ -449,7 +477,6 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         fullLayout?.isHidden = template.enabled
         lowerAlignment?.isHidden = !template.enabled
         artworkSection.isHidden = !template.enabled
-        artworkSizing.isHidden = !template.enabled
         animationSection.isHidden = !template.enabled
         resetLayoutRow.isHidden = !template.enabled
         for row in [0, 1, 3] { regionGrid.row(at: row).isHidden = !template.enabled }
@@ -605,6 +632,19 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         draftBadge.update(publishing ? "PUBLISHING" : importing ? "IMPORTING" : dirty ? "UNAPPLIED CHANGES" : "APPLIED",
                           color: dirty || importing || publishing ? .systemOrange : .secondaryLabelColor)
         draftStatus.stringValue = importing ? "Preparing artwork…" : dirty ? "This Mac’s output is unchanged" : "Design saved on this Mac"
+        if let draft = draftLibrary, let applied = appliedLibrary {
+            let profiles = DesignProfileID.allCases.filter {
+                draft[$0] != applied[$0] || ($0 == editingProfile && (hasUnfinishedEdit || !invalidFields.isEmpty || importing))
+            }
+            var changes = profiles.map(\.rawValue)
+            if draft.background != applied.background { changes.append("Shared key colour") }
+            if draft.selection != applied.selection { changes.append("Output selection") }
+            draftScope.stringValue = changes.isEmpty
+                ? "Apply saves all template changes, shared key colour and output selection."
+                : "Apply and Revert cover: " + changes.joined(separator: " · ")
+        } else {
+            draftScope.stringValue = "Apply and Revert cover this design."
+        }
     }
     private func isEditing(_ field: NSTextField) -> Bool { field.currentEditor() != nil }
     private func commit(_ next: LowerThirdTemplate) { template = next.clamped(); refresh() }
@@ -656,8 +696,8 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         commit(next)
     }
     @objc private func profileChanged() {
-        let id = DesignProfileID(rawValue: profilePicker.titleOfSelectedItem ?? "") ?? .custom
-        selectProfile(id)
+        guard DesignProfileID.allCases.indices.contains(profileSelector.selectedSegment) else { return }
+        selectProfile(DesignProfileID.allCases[profileSelector.selectedSegment])
     }
     func selectProfile(_ id: DesignProfileID) {
         guard library != nil, !publishing, !importing, !loading else { return }
@@ -723,7 +763,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         guard let field = notification.object as? NSTextField else { return }
         guard let value = number(in: field) else {
             invalidFields.insert(ObjectIdentifier(field)); field.textColor = .systemRed
-            validationMessage = "Enter a number for \(field.accessibilityLabel() ?? "this value"), or Revert Changes."
+            validationMessage = "Enter a number for \(field.accessibilityLabel() ?? "this value"), or Revert All Changes."
             refreshPreview(); refreshActions(); return
         }
         invalidFields.remove(ObjectIdentifier(field)); field.textColor = .labelColor

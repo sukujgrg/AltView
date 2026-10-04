@@ -177,14 +177,14 @@ final class WindowTests: XCTestCase {
         eventually("saved override in handshake") { status.connected && status.templateCapabilities.policy == .fixed(.lyrics) }
         controller.showDesignPage()
         let root = try XCTUnwrap(controller.window?.contentView)
-        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text template" })
+        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Output template" })
         selection.selectItem(withTitle: "Scripture"); selection.sendAction(selection.action, to: selection.target)
         XCTAssertEqual(status.templateCapabilities.policy, .fixed(.lyrics), "A design draft is private")
         try button("Apply Design to Output", in: root).performClick(nil)
         eventually("applied override broadcast without publishing") { status.templateCapabilities.policy == .fixed(.scripture) }
         XCTAssertNil(controller.receiverStatus.ownerID)
         selection.selectItem(withTitle: "Custom layout"); selection.sendAction(selection.action, to: selection.target)
-        try button("Revert Changes", in: root).performClick(nil)
+        try button("Revert All Changes", in: root).performClick(nil)
         XCTAssertEqual(status.templateCapabilities.policy, .fixed(.scripture))
     }
 
@@ -256,7 +256,7 @@ final class WindowTests: XCTestCase {
         window.setContentSize(NSSize(width: 980, height: 650))
         controller.showDesignPage()
         let samples = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Design preview content" })
-        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text template" })
+        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Output template" })
         for name in ["Scripture", "Lyrics"] {
             samples.selectItem(withTitle: "Sample · \(name)"); samples.sendAction(samples.action, to: samples.target)
             root.layoutSubtreeIfNeeded()
@@ -276,7 +276,7 @@ final class WindowTests: XCTestCase {
         controller.showComposerPage()
         XCTAssertEqual(descendants(root).compactMap { $0 as? NSTextField }.filter { $0.stringValue == "Hidden by Design · text is kept" }.count, 2)
         controller.showDesignPage()
-        try button("Revert Changes", in: root).performClick(nil)
+        try button("Revert All Changes", in: root).performClick(nil)
     }
 
     func testTextTemplatesPreviewApplyRevertAndPreserveCustomSettings() throws {
@@ -290,7 +290,7 @@ final class WindowTests: XCTestCase {
         func picker(_ name: String) throws -> NSPopUpButton {
             try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == name })
         }
-        let selection = try picker("Text template")
+        let selection = try picker("Output template")
         let samples = try picker("Design preview content")
         let alignment = try picker("Lower third text alignment")
         let title = try button("Title", in: root), footer = try button("Footer", in: root)
@@ -389,6 +389,15 @@ final class WindowTests: XCTestCase {
         check(); wait(for: [done], timeout: timeout + 0.5)
     }
     private func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    private func editingTemplate(in view: NSView) throws -> NSSegmentedControl {
+        try XCTUnwrap(descendants(view).compactMap { $0 as? NSSegmentedControl }.first {
+            $0.accessibilityIdentifier() == "editingTemplate"
+        })
+    }
+    private func selectTemplate(_ profile: DesignProfileID, in control: NSSegmentedControl) {
+        control.selectedSegment = DesignProfileID.allCases.firstIndex(of: profile)!
+        control.sendAction(control.action, to: control.target)
+    }
     private func button(_ title: String, in view: NSView) throws -> NSButton {
         try XCTUnwrap(descendants(view).compactMap { $0 as? NSButton }.first { $0.title == title })
     }
@@ -1106,9 +1115,9 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(published.count, 1)
         XCTAssertEqual(published.first?.artworkRegion.width, 100)
         XCTAssertFalse(controller.hasChanges)
-        try button("Reset All Positions", in: root).performClick(nil)
+        try button("Reset This Template’s Positions", in: root).performClick(nil)
         XCTAssertEqual(controller.template.artworkRegion.width, 90)
-        try button("Revert Changes", in: root).performClick(nil)
+        try button("Revert All Changes", in: root).performClick(nil)
         XCTAssertEqual(controller.template.artworkRegion.width, 100, "Revert restores the last applied design")
         XCTAssertEqual(published.count, 1)
     }
@@ -1298,7 +1307,7 @@ final class WindowTests: XCTestCase {
         mode.performClick(nil)
         XCTAssertFalse(preview.presentation.template.enabled)
         XCTAssertEqual(preview.accessibilityLabel(), "Heading\nMain message\nCredit")
-        try button("Revert Changes", in: root).performClick(nil)
+        try button("Revert All Changes", in: root).performClick(nil)
         XCTAssertEqual(title.state, .off); XCTAssertEqual(footer.state, .off)
         XCTAssertEqual(preview.accessibilityLabel(), "Main message")
     }
@@ -1566,7 +1575,7 @@ final class WindowTests: XCTestCase {
         controller.showDesignPage()
         XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
         XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
-        try button("Revert Changes", in: root).performClick(nil)
+        try button("Revert All Changes", in: root).performClick(nil)
         XCTAssertEqual(font.titleOfSelectedItem, "System")
     }
 
@@ -1578,7 +1587,7 @@ final class WindowTests: XCTestCase {
         library.lyrics.template.assetID = UUID(); library.lyrics.template.assetName = "missing-lyrics.png"
         editor.update(library: library, artworks: [:], busy: false, message: "")
         let root = editor.contentView
-        let policy = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Text template" })
+        let policy = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Output template" })
         var saved: TemplateDesignLibrary?
         editor.onApplyLibrary = { value, _ in saved = value }
 
@@ -1587,7 +1596,7 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(editor.editingProfile, .custom)
         XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains {
-            $0.stringValue.contains("Lyrics PNG unavailable") && $0.stringValue.contains("Edit template")
+            $0.stringValue.contains("Lyrics PNG unavailable") && $0.stringValue.contains("Editing template")
         })
         editor.applyChanges()
         XCTAssertNil(saved)
@@ -1666,9 +1675,9 @@ final class WindowTests: XCTestCase {
         eventually("old lyric source active") { controller.receiverStatus.ownerName == "Missing Lyrics fixture" }
 
         controller.showDesignPage()
-        let profiles = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        let profiles = try editingTemplate(in: root)
         eventually("artwork load finished") { profiles.isEnabled }
-        profiles.selectItem(withTitle: "Lyrics"); profiles.sendAction(profiles.action, to: profiles.target)
+        selectTemplate(.lyrics, in: profiles)
         let font = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Draft font" })
         font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
         let editor = try XCTUnwrap(try button("Choose PNG…", in: root).target as? LowerThirdWindowController)
@@ -1699,11 +1708,14 @@ final class WindowTests: XCTestCase {
         func picker(_ label: String) throws -> NSPopUpButton {
             try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == label })
         }
-        let profile = try picker("Edit template"), policy = try picker("Text template")
+        let profile = try editingTemplate(in: root), policy = try picker("Output template")
         let font = try picker("Draft font"), alignment = try picker("Lower third text alignment")
         let lineLayout = try picker("Lyrics line layout")
         let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
-        profile.selectItem(withTitle: "Lyrics"); profile.sendAction(profile.action, to: profile.target)
+        let scope = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityIdentifier() == "designChangeScope"
+        })
+        selectTemplate(.lyrics, in: profile)
         XCTAssertFalse(editor.hasChanges, "Selecting a profile is private navigation")
         XCTAssertEqual(policy.titleOfSelectedItem, "From sending app")
         XCTAssertEqual(preview.presentation.template.textTemplate, .lyrics)
@@ -1712,15 +1724,18 @@ final class WindowTests: XCTestCase {
         alignment.selectItem(withTitle: "Right"); alignment.sendAction(alignment.action, to: alignment.target)
         try button("Title", in: root).performClick(nil)
         XCTAssertTrue(editor.template.showsTitle, "Built-in templates now allow row customization")
+        XCTAssertEqual(scope.stringValue, "Apply and Revert cover: Lyrics")
         var applied: TemplateDesignLibrary?
         editor.onApplyLibrary = { value, _ in applied = value }
-        profile.selectItem(withTitle: "Scripture"); profile.sendAction(profile.action, to: profile.target)
+        selectTemplate(.scripture, in: profile)
+        XCTAssertEqual(scope.stringValue, "Apply and Revert cover: Lyrics", "Navigation must keep hidden drafts in the action summary")
         XCTAssertEqual(font.titleOfSelectedItem, "System")
         XCTAssertEqual(alignment.titleOfSelectedItem, "Left")
         XCTAssertEqual(editor.template.lyricLineLayout, .preserve)
         try button("Fit to Canvas", in: root).performClick(nil)
+        XCTAssertEqual(scope.stringValue, "Apply and Revert cover: Scripture · Lyrics")
         editor.update(library: library, artworks: [:], busy: false, message: "")
-        profile.selectItem(withTitle: "Lyrics"); profile.sendAction(profile.action, to: profile.target)
+        selectTemplate(.lyrics, in: profile)
         XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
         XCTAssertEqual(lineLayout.titleOfSelectedItem, "Compact pairs")
         XCTAssertEqual(alignment.titleOfSelectedItem, "Right")
@@ -1734,14 +1749,22 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(saved.custom.template.artworkRegion.width, 90)
         XCTAssertEqual(saved.selection, .sender)
         XCTAssertFalse(editor.hasChanges)
+        XCTAssertTrue(scope.stringValue.hasPrefix("Apply saves all template changes"))
         font.selectItem(withTitle: "Helvetica"); font.sendAction(font.action, to: font.target)
-        profile.selectItem(withTitle: "Scripture"); profile.sendAction(profile.action, to: profile.target)
-        try button("Reset All Positions", in: root).performClick(nil)
-        editor.revertChanges()
+        selectTemplate(.scripture, in: profile)
+        try button("Reset This Template’s Positions", in: root).performClick(nil)
+        let background = try picker("Draft keying background")
+        background.selectItem(withTitle: "Green · Chroma key"); background.sendAction(background.action, to: background.target)
+        policy.selectItem(withTitle: "Lyrics"); policy.sendAction(policy.action, to: policy.target)
+        XCTAssertEqual(scope.stringValue, "Apply and Revert cover: Scripture · Lyrics · Shared key colour · Output selection")
+        try button("Revert All Changes", in: root).performClick(nil)
         XCTAssertEqual(editor.template.artworkRegion.width, 100)
-        profile.selectItem(withTitle: "Lyrics"); profile.sendAction(profile.action, to: profile.target)
+        XCTAssertEqual(editor.draftLibrary?.background, library.background)
+        XCTAssertEqual(editor.draftLibrary?.selection, .sender)
+        selectTemplate(.lyrics, in: profile)
         XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
         XCTAssertFalse(editor.hasChanges)
+        XCTAssertTrue(scope.stringValue.hasPrefix("Apply saves all template changes"))
     }
 
     func testTemplateArtworkSurvivesOtherProfileUpdatesRestartAndSenderChanges() throws {
@@ -1769,9 +1792,9 @@ final class WindowTests: XCTestCase {
         defer { controller.shutdown(); controller.close() }
         controller.showDesignPage()
         let root = try XCTUnwrap(controller.window?.contentView)
-        let profiles = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        let profiles = try editingTemplate(in: root)
         eventually("migrated artwork loaded") { profiles.isEnabled }
-        profiles.selectItem(withTitle: "Lyrics"); profiles.sendAction(profiles.action, to: profiles.target)
+        selectTemplate(.lyrics, in: profiles)
         let choose = try button("Choose PNG…", in: root)
         // Use the real importer without opening a file chooser in the test.
         let editor = try XCTUnwrap(choose.target as? LowerThirdWindowController)
@@ -1779,7 +1802,7 @@ final class WindowTests: XCTestCase {
         eventually("lyric artwork imported") { editor.template.assetID != old.id && editor.canPublish }
         let lyricsID = try XCTUnwrap(editor.template.assetID)
         editor.applyChanges()
-        profiles.selectItem(withTitle: "Scripture"); profiles.sendAction(profiles.action, to: profiles.target)
+        selectTemplate(.scripture, in: profiles)
         XCTAssertEqual(editor.template.assetID, old.id)
         try button("Fit to Canvas", in: root).performClick(nil)
         editor.applyChanges()
@@ -1792,10 +1815,10 @@ final class WindowTests: XCTestCase {
         defer { restarted.shutdown(); restarted.close() }
         restarted.showDesignPage()
         let restartedRoot = try XCTUnwrap(restarted.window?.contentView)
-        let picker = try XCTUnwrap(descendants(restartedRoot).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        let picker = try editingTemplate(in: restartedRoot)
         eventually("saved profile artwork reloaded") { picker.isEnabled && restarted.receiverStatus.listening }
         for (name, id) in [("Lyrics", lyricsID), ("Scripture", old.id), ("Custom", old.id)] {
-            picker.selectItem(withTitle: name); picker.sendAction(picker.action, to: picker.target)
+            selectTemplate(try XCTUnwrap(DesignProfileID(rawValue: name)), in: picker)
             let savedEditor = try XCTUnwrap(try button("Choose PNG…", in: restartedRoot).target as? LowerThirdWindowController)
             XCTAssertEqual(savedEditor.template.assetID, id)
             XCTAssertEqual(savedEditor.draftArtwork?.id, id)
@@ -1836,9 +1859,9 @@ final class WindowTests: XCTestCase {
         controller.showDesignPage()
         let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
         window.setContentSize(NSSize(width: 980, height: 650))
-        let profiles = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Edit template" })
+        let profiles = try editingTemplate(in: root)
         let samples = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Design preview content" })
-        profiles.selectItem(withTitle: "Lyrics"); profiles.sendAction(profiles.action, to: profiles.target)
+        selectTemplate(.lyrics, in: profiles)
         samples.selectItem(withTitle: "Text draft"); samples.sendAction(samples.action, to: samples.target)
         window.orderFrontRegardless()
         for (name, appearance) in [("Light", NSAppearance.Name.aqua), ("Dark", .darkAqua)] {
@@ -1849,9 +1872,20 @@ final class WindowTests: XCTestCase {
             let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
             XCTAssertEqual(preview.bounds.width / preview.bounds.height, 16.0 / 9, accuracy: 0.01)
             XCTAssertGreaterThan(preview.bounds.width, 400)
-            for control in [profiles as NSView, try button("Apply Design to Output", in: root), try button("Revert Changes", in: root)] {
+            for control in [profiles as NSView, try button("Apply Design to Output", in: root), try button("Revert All Changes", in: root)] {
                 XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
             }
+            let inspector = try XCTUnwrap(descendants(root).compactMap { $0 as? NSScrollView }.first {
+                $0.accessibilityLabel() == "Design inspector"
+            })
+            let document = try XCTUnwrap(inspector.documentView)
+            inspector.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - inspector.contentSize.height)))
+            inspector.reflectScrolledClipView(inspector.contentView)
+            root.layoutSubtreeIfNeeded()
+            XCTAssertFalse(profiles.visibleRect.isEmpty, "Template navigation must remain visible after scrolling")
+            XCTAssertTrue(root.bounds.contains(profiles.convert(profiles.bounds, to: root)))
+            let scope = try XCTUnwrap(descendants(root).first { $0.accessibilityIdentifier() == "designChangeScope" })
+            XCTAssertFalse(scope.visibleRect.isEmpty, "The action scope must remain visible")
             XCTAssertEqual(preview.accessibilityLabel(), "You are the light that guides me home\nYou are the hope that makes me whole")
             let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
             try XCTUnwrap(window.appearance).performAsCurrentDrawingAppearance {
