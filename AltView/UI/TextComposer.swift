@@ -15,7 +15,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     var cancelLocalPublish: (() -> Void)?
     var senderID: UUID { client.senderID }
     var draft: DisplayContent { session.draft }
-    private let draftPresentation = CanvasPresentation()
+    private let draftPresentation: CanvasPresentation
     private var designReady = true
     private var designHasChanges = false
     private var appliedTemplate = LowerThirdTemplate()
@@ -101,9 +101,11 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     init(defaults: UserDefaults = .standard, localReceiverID: UUID? = nil,
          loadPairing: @escaping (String) throws -> Data? = KeyStore.read,
          storePairing: @escaping (Data, String) throws -> Void = { try KeyStore.save($0, account: $1) },
+         layoutCache: CanvasTextLayoutCache = CanvasTextLayoutCache(),
          connectLocal: @escaping (@escaping (Result<LocalReceiverConnection, Error>) -> Void) -> Void) {
         self.defaults = defaults; self.connectLocal = connectLocal
         self.loadPairing = loadPairing; self.storePairing = storePairing
+        draftPresentation = CanvasPresentation(layoutCache: layoutCache)
         super.init(nibName: nil, bundle: nil)
         client = SenderClient(name: "AltView Custom Text · \(Host.current().localizedName ?? "This Mac")") { [weak self] in self?.receive($0) }
         let draft = defaults.data(forKey: "customTextDraft").flatMap { try? JSONDecoder().decode(DisplayContent.self, from: $0) } ?? DisplayContent()

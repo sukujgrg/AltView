@@ -3,6 +3,125 @@ import AppKit
 @testable import AltView
 
 final class RendererTests: XCTestCase {
+    func testLayoutsAreSharedAcrossDrawingPreviewsAccessibilityAndStatus() throws {
+        for lowerThird in [false, true] {
+            var fits = 0
+            let cache = CanvasTextLayoutCache { content, style, template in
+                fits += 1
+                return template.enabled ? .lowerThird(content: content, style: style, template: template)
+                    : .make(content: content, style: style, template: template)
+            }
+            let scene = CanvasPresentation(layoutCache: cache), draft = CanvasPresentation(layoutCache: cache)
+            let output = OutputCanvas(presentation: scene), preview = OutputCanvas(presentation: scene)
+            let draftPreview = OutputCanvas(presentation: draft)
+            var template = LowerThirdTemplate(); template.enabled = lowerThird; template.lyricLineLayout = .compact
+            let content = DisplayContent(title: "Ignored title", body: "First line\nSecond line", template: .lyrics)
+            scene.update(content: content, style: OutputStyle(), template: template, artwork: nil, immediately: true)
+            draft.update(content: content, style: OutputStyle(), template: template, artwork: nil, immediately: true)
+            XCTAssertEqual(fits, 0, "Offscreen scenes must not fit text until requested")
+            let statusLayout = scene.textLayout
+            XCTAssertEqual(fits, 1)
+            for canvas in [output, preview, draftPreview] {
+                XCTAssertEqual(canvas.accessibilityLabel(), statusLayout.bodyText)
+                try draw(canvas, size: NSSize(width: 192, height: 108))
+                try draw(canvas, size: NSSize(width: 384, height: 216))
+            }
+            XCTAssertEqual(draft.textLayout, statusLayout)
+            XCTAssertEqual(fits, 1, "All consumers and canvas sizes reuse the same fitted layout")
+        }
+    }
+
+    func testLayoutCacheInvalidatesTextTypographyGeometryAndLyricSettings() {
+        var fits = 0
+        let cache = CanvasTextLayoutCache { content, style, template in
+            fits += 1
+            return template.enabled ? .lowerThird(content: content, style: style, template: template)
+                : .make(content: content, style: style, template: template)
+        }
+        let content = DisplayContent(title: "Title", body: "First line\nSecond line", footer: "Footer", template: .lyrics)
+        let style = OutputStyle(), template = LowerThirdTemplate()
+        var changes: [(DisplayContent, OutputStyle, LowerThirdTemplate)] = []
+        for key in [\DisplayContent.title, \.body, \.footer] {
+            var next = content; next[keyPath: key] += " changed"; changes.append((next, style, template))
+        }
+        var nextContent = content; nextContent.emptyRegions = .reserve; changes.append((nextContent, style, template))
+        nextContent = content; nextContent.template = .scripture; changes.append((nextContent, style, template))
+        var nextStyle = style; nextStyle.fontName = "Georgia"; changes.append((content, nextStyle, template))
+        nextStyle = style; nextStyle.fontSize = 120; changes.append((content, nextStyle, template))
+        nextStyle = style; nextStyle.lineSpacing = 0.3; changes.append((content, nextStyle, template))
+        nextStyle = style; nextStyle.heightFraction = 0.3; changes.append((content, nextStyle, template))
+        nextStyle = style; nextStyle.position = .top; changes.append((content, nextStyle, template))
+        nextStyle = style; nextStyle.alignment = .right; changes.append((content, nextStyle, template))
+        var nextTemplate = template; nextTemplate.enabled = true; changes.append((content, style, nextTemplate))
+        for key in [\LowerThirdTemplate.titleRegion, \.bodyRegion, \.footerRegion] {
+            var next = nextTemplate; next[keyPath: key].height = 2; changes.append((content, style, next))
+        }
+        for key in [\LowerThirdTemplate.showsTitle, \.showsFooter, \.customized] {
+            var next = template; next[keyPath: key].toggle(); changes.append((content, style, next))
+        }
+        nextTemplate = template; nextTemplate.alignment = .right; changes.append((content, style, nextTemplate))
+        nextTemplate = template; nextTemplate.textTemplate = .scripture; changes.append((content, style, nextTemplate))
+        nextTemplate = template; nextTemplate.lyricLineLayout = .compact; changes.append((content, style, nextTemplate))
+        nextTemplate.lyricJoiner = .dot; changes.append((content, style, nextTemplate))
+        for (content, style, template) in changes {
+            let before = fits
+            let actual = cache.layout(content: content, style: style, template: template)
+            let expected = template.enabled ? CanvasTextLayout.lowerThird(content: content, style: style, template: template)
+                : CanvasTextLayout.make(content: content, style: style, template: template)
+            XCTAssertEqual(actual, expected)
+            XCTAssertEqual(fits, before + 1, "A changed fitting input needs a new calculation")
+        }
+    }
+
+    func testLayoutCacheReusesExitLayoutAndIgnoresCompositingChanges() {
+        var fits = 0, now: TimeInterval = 10
+        let cache = CanvasTextLayoutCache { content, style, template in
+            fits += 1
+            return .lowerThird(content: content, style: style, template: template)
+        }
+        let scene = CanvasPresentation(clock: { now }, reduceMotion: { false }, layoutCache: cache)
+        defer { scene.stopAnimation() }
+        let canvas = OutputCanvas(presentation: scene)
+        var template = LowerThirdTemplate(); template.enabled = true
+        var style = OutputStyle()
+        scene.update(content: .lyrics, style: style, template: template, artwork: nil, immediately: true)
+        let layout = scene.textLayout
+        style.background = "00FF00"; template.animation = .reveal; template.duration = 1
+        template.artwork = .custom; template.assetID = UUID(); template.assetName = "Artwork"
+        template.showsArtwork = false; template.artworkRegion.height = 20
+        scene.update(content: .lyrics, style: style, template: template, artwork: nil)
+        XCTAssertEqual(scene.textLayout, layout)
+        scene.update(content: .empty, style: style, template: template, artwork: nil)
+        XCTAssertEqual(scene.displayedTextLayout, layout)
+        XCTAssertEqual(canvas.accessibilityLabel(), "Output blank — keying background")
+        now += 0.5
+        XCTAssertGreaterThan(scene.progress, 0)
+        XCTAssertEqual(scene.displayedTextLayout, layout)
+        XCTAssertEqual(fits, 1, "Background, artwork and exit animation do not refit text")
+    }
+
+    func testLayoutCacheEvictsLeastRecentlyUsedContent() {
+        var fits = 0
+        let cache = CanvasTextLayoutCache(capacity: 2) { content, style, template in
+            fits += 1; return .make(content: content, style: style, template: template)
+        }
+        for body in ["A", "B", "A", "C", "A", "B"] {
+            _ = cache.layout(content: DisplayContent(body: body), style: OutputStyle(), template: LowerThirdTemplate())
+        }
+        XCTAssertEqual(fits, 4, "Only the least recently used layout is discarded")
+    }
+
+    private func draw(_ canvas: OutputCanvas, size: NSSize) throws {
+        canvas.frame.size = size
+        let cg = try XCTUnwrap(CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+            bytesPerRow: Int(size.width) * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
+        canvas.draw(canvas.bounds)
+    }
+
     func testFullCanvasHiddenLabelsReclaimSpaceEvenWhenEmptyRowsAreReserved() {
         var style = OutputStyle(); style.position = .top; style.heightFraction = 0.3
         for behavior in [EmptyRegionBehavior.collapse, .reserve] {

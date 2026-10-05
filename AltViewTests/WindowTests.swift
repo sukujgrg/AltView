@@ -10,6 +10,118 @@ private final class LayoutTestWindow: NSWindow {
 }
 
 final class WindowTests: XCTestCase {
+    func testHiddenPreviewDefersLayoutAndRedrawUntilVisible() throws {
+        _ = NSApplication.shared
+        var fits = 0
+        let cache = CanvasTextLayoutCache { content, style, template in
+            fits += 1; return .make(content: content, style: style, template: template)
+        }
+        let scene = CanvasPresentation(layoutCache: cache)
+        let canvas = OutputCanvas(presentation: scene)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 225),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = canvas
+        defer { window.close() }
+        canvas.needsDisplay = false
+        let initiallyDirty = canvas.needsDisplay
+        scene.update(content: DisplayContent(body: "First preview"), style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
+        XCTAssertEqual(fits, 0)
+        XCTAssertEqual(canvas.needsDisplay, initiallyDirty, "The snapshot must not invalidate an offscreen view")
+        window.orderFrontRegardless()
+        eventually("first visible preview fits") { canvas.isVisibleForUpdates && fits == 1 }
+        XCTAssertEqual(canvas.accessibilityLabel(), "First preview")
+
+        canvas.isHidden = true; canvas.needsDisplay = false
+        scene.update(content: DisplayContent(body: "Hidden edit"), style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
+        XCTAssertEqual(fits, 1)
+        XCTAssertFalse(canvas.needsDisplay)
+        canvas.isHidden = false
+        eventually("unhidden preview catches up") { fits == 2 }
+        XCTAssertEqual(canvas.accessibilityLabel(), "Hidden edit")
+
+        window.orderOut(nil)
+        eventually("window is offscreen") { !canvas.isVisibleForUpdates }
+        canvas.needsDisplay = false
+        scene.update(content: DisplayContent(body: "Latest preview"), style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
+        XCTAssertEqual(fits, 2)
+        XCTAssertFalse(canvas.needsDisplay)
+        window.orderFrontRegardless()
+        eventually("reopened preview catches up") { canvas.isVisibleForUpdates && fits == 3 }
+        XCTAssertEqual(canvas.accessibilityLabel(), "Latest preview")
+    }
+
+    func testWorkspaceDoesNotFitHiddenDesignOrTextPreviews() throws {
+        let domain = "AltViewTests.HiddenLayouts.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defaults.set(true, forKey: "customTextEnabled")
+        try defaults.set(JSONEncoder().encode(DisplayContent(body: "Shared private draft")), forKey: "customTextDraft")
+        var fits = 0
+        let cache = CanvasTextLayoutCache { content, style, template in
+            fits += 1; return .make(content: content, style: style, template: template)
+        }
+        let scene = CanvasPresentation(layoutCache: cache)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), presentation: scene)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver ready") { controller.receiverStatus.listening }
+        XCTAssertEqual(fits, 0, "Draft controls can update without fitting offscreen previews")
+        controller.showDesignPage()
+        eventually("design fits the private draft") { fits == 1 }
+        controller.showComposerPage()
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        // The XCTest host can be inactive behind the user's foreground app.
+        controller.window?.orderFrontRegardless()
+        eventually("Text preview is visible") { canvas.isVisibleForUpdates }
+        XCTAssertEqual(fits, 1, "Text and Design share matching draft layouts")
+        controller.showReceiverPage()
+        XCTAssertEqual(fits, 1, "A blank output and hidden drafts require no text fitting")
+    }
+
+    func testOutputSleepPreventionIsScopedToOpenPresentation() throws {
+        _ = NSApplication.shared
+        let scene = CanvasPresentation()
+        var begun: [NSObject] = [], ended: [ObjectIdentifier] = []
+        var controller: OutputWindowController? = OutputWindowController(presentation: scene, beginActivity: { options, reason in
+            XCTAssertTrue(options.contains(.idleSystemSleepDisabled))
+            XCTAssertTrue(options.contains(.idleDisplaySleepDisabled))
+            XCTAssertTrue(options.contains(.userInitiated))
+            XCTAssertFalse(reason.isEmpty)
+            let token = NSObject(); begun.append(token); return token
+        }, endActivity: { token in ended.append(ObjectIdentifier(token)) })
+        defer { controller?.stop() }
+        XCTAssertTrue(begun.isEmpty)
+        controller?.show(displayID: nil)
+        XCTAssertEqual(begun.count, 1)
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Output" && $0.isVisible })
+        scene.update(content: .scripture, style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
+        scene.update(content: .empty, style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+        XCTAssertEqual(begun.count, 1, "Text and readiness updates must not duplicate the activity")
+        XCTAssertTrue(ended.isEmpty, "The output's keying background is still active")
+        window.miniaturize(nil)
+        eventually("minimized output releases sleep prevention") { controller?.readiness == .minimized && ended.count == 1 }
+        window.deminiaturize(nil)
+        eventually("restored output reacquires sleep prevention") { controller?.readiness == .preview && begun.count == 2 }
+        window.close()
+        XCTAssertEqual(ended.count, 2)
+        controller?.stop(); controller?.stop()
+        controller?.show(displayID: UInt32.max)
+        XCTAssertEqual(begun.count, 2, "Waiting for a disconnected display must allow sleep")
+        controller = nil
+        var lastWindow: NSWindow?
+        autoreleasepool {
+            let teardown = OutputWindowController(presentation: scene, beginActivity: { _, _ in
+                let token = NSObject(); begun.append(token); return token
+            }, endActivity: { ended.append(ObjectIdentifier($0)) })
+            teardown.show(displayID: nil)
+            lastWindow = NSApp.windows.first { $0.title == "AltView — Preview Output" && $0.isVisible }
+        }
+        XCTAssertEqual(begun.count, 3)
+        XCTAssertEqual(ended, begun.map { ObjectIdentifier($0) }, "Every activity ends exactly once, including teardown")
+        lastWindow?.close()
+    }
+
     func testLocalComposerRestoresPublishedSnapshotAfterAutomaticPortChanges() throws {
         let domain = "AltViewTests.LocalPortChange.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))

@@ -14,6 +14,9 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
     private(set) var readiness = OutputReadiness.closed
     private var displayAsleep = false
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var activity: NSObjectProtocol?
+    private let beginActivity: (ProcessInfo.ActivityOptions, String) -> NSObjectProtocol
+    private let endActivity: (NSObjectProtocol) -> Void
 
     private func publishReadiness() {
         let next: OutputReadiness
@@ -23,13 +26,22 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
         else if output?.isMiniaturized == true { next = .minimized }
         else if output?.isVisible != true { next = .closed }
         else { next = windowed ? .preview : .ready }
+        // An open output keeps its keying background active even when text is hidden.
+        // Release while minimized or disconnected; resume when output returns.
+        let needsActivity = next == .ready || next == .preview || (next == .asleep && output?.isVisible == true && output?.isMiniaturized == false)
+        if needsActivity && activity == nil {
+            activity = beginActivity([.userInitiated, .idleSystemSleepDisabled, .idleDisplaySleepDisabled], "Presenting AltView output")
+        } else if !needsActivity { releaseActivity() }
         guard next != readiness else { return }
         readiness = next
         onReadinessChange?(next)
     }
 
-    init(presentation: CanvasPresentation) {
+    init(presentation: CanvasPresentation,
+         beginActivity: @escaping (ProcessInfo.ActivityOptions, String) -> NSObjectProtocol = { ProcessInfo.processInfo.beginActivity(options: $0, reason: $1) },
+         endActivity: @escaping (NSObjectProtocol) -> Void = { ProcessInfo.processInfo.endActivity($0) }) {
         self.presentation = presentation
+        self.beginActivity = beginActivity; self.endActivity = endActivity
         super.init()
         for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification] {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -47,6 +59,11 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
     }
     static func displayID(_ screen: NSScreen) -> UInt32 {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+    private func releaseActivity() {
+        guard let activity else { return }
+        self.activity = nil
+        endActivity(activity)
     }
     func show(displayID: UInt32?) {
         stop()
@@ -112,5 +129,6 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         reposition?.cancel()
+        releaseActivity()
     }
 }

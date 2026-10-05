@@ -30,7 +30,11 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var server: ReceiverServer!
     private let presentation: CanvasPresentation
     private lazy var output = OutputWindowController(presentation: presentation)
-    private lazy var preview = OutputCanvas(presentation: presentation)
+    private lazy var preview: OutputCanvas = {
+        let canvas = OutputCanvas(presentation: presentation)
+        canvas.onVisible = { [weak self] in self?.refreshFitStatus() }
+        return canvas
+    }()
     private let artworkStore: PNGArtworkStore
     private var template = LowerThirdTemplate()
     private var designs = TemplateDesignLibrary()
@@ -136,7 +140,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             self?.composer?.updateLocalDisplay(text)
             self?.onPresentationActivityChange?()
         }
-        composer = TextComposerViewController(defaults: defaults, localReceiverID: id) { [weak self] completion in
+        composer = TextComposerViewController(defaults: defaults, localReceiverID: id, layoutCache: presentation.layoutCache) { [weak self] completion in
             self?.connectLocal(completion)
         }
         composer.onPresentationActivityChange = { [weak self] in self?.onPresentationActivityChange?() }
@@ -154,7 +158,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             return true
         }
         composer.cancelLocalPublish = { [weak self] in self?.cancelLocalPublish() }
-        let editor = LowerThirdWindowController(artworkStore: artworkStore)
+        let editor = LowerThirdWindowController(artworkStore: artworkStore, layoutCache: presentation.layoutCache)
         templateEditor = editor
         editor.onApplyLibrary = { [weak self] value, assets in self?.applyDesigns(value, artworks: assets) }
         editor.onDraftChange = { [weak self] in self?.refreshDraft() }
@@ -563,21 +567,27 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         else { contentBadge.update("NO TEXT") }
         presentation.update(content: content, style: style, template: template, artwork: artwork,
                             immediately: receiverStatus.ownerName == nil || unavailable)
-        let size = template.enabled
-            ? CanvasTextLayout.lowerThird(content: content, style: style, template: template).bodyFontSize
-            : CanvasTextLayout.make(content: content, style: style, template: template).bodyFontSize
+        refreshFitStatus()
+        composer?.updateLocalOutput(owner: receiverStatus.ownerName, ownerID: receiverStatus.ownerID, notice: unavailable ? artworkNotice : "")
+        templateEditor?.update(library: designs, artworks: artworks, busy: artworkBusy, message: artworkMessage)
+        refreshOutputReadiness()
+        refreshDraft()
+    }
+    private var artworkNotice: String {
+        artworkBusy ? "Loading PNG artwork…" : "Lower third is blank. Open Design to replace the PNG, choose Built-in banner, or untick Artwork in Layout, then Apply."
+    }
+    private func refreshFitStatus() {
+        guard preview.isVisibleForUpdates else { return }
+        let content = presentation.content
+        let unavailable = template.requiresCustomArtwork && artwork == nil
         if unavailable {
-            fitLabel.stringValue = artworkBusy ? "Loading PNG artwork…" : "Lower third is blank. Open Design to replace the PNG, choose Built-in banner, or untick Artwork in Layout, then Apply."
-        } else if content.visible && size < 28 {
-            fitLabel.stringValue = "Text fits at \(Int(size)) pt. Use shorter content or enlarge its text area for better readability."
+            fitLabel.stringValue = artworkNotice
+        } else if content.visible && presentation.textLayout.bodyFontSize < 28 {
+            fitLabel.stringValue = "Text fits at \(Int(presentation.textLayout.bodyFontSize)) pt. Use shorter content or enlarge its text area for better readability."
         } else {
             let preset = template.selectedContentTemplate(for: content).map { "\($0.name) template · " } ?? ""
             fitLabel.stringValue = "\(preset)16:9 canvas · White foreground · Key colour #\(style.background)"
         }
-        composer?.updateLocalOutput(owner: receiverStatus.ownerName, ownerID: receiverStatus.ownerID, notice: unavailable ? fitLabel.stringValue : "")
-        templateEditor?.update(library: designs, artworks: artworks, busy: artworkBusy, message: artworkMessage)
-        refreshOutputReadiness()
-        refreshDraft()
     }
     private func refreshDraft() {
         guard !updatingDraft, let editor = templateEditor, composer != nil else { return }

@@ -62,7 +62,7 @@ struct OutputStyle: Codable, Equatable {
     }
 }
 
-struct CanvasTextLayout {
+struct CanvasTextLayout: Equatable {
     let bodyText: String
     let bodyFontSize: CGFloat
     let titleFontSize: CGFloat
@@ -175,6 +175,13 @@ final class OutputCanvas: NSView {
     private var accessibleContent: DisplayContent?
     private var accessibilitySource: DisplayContent?
     private var accessibilityRevision: UInt64?
+    private var visibilityObservers: [NSObjectProtocol] = []
+    private var wasVisible = false
+    var onVisible: (() -> Void)?
+    var isVisibleForUpdates: Bool {
+        window?.isVisible == true && window?.isMiniaturized == false
+            && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor
+    }
     // Convenience accessors for standalone rendering and tests.
     var content: DisplayContent {
         get { presentation.content }
@@ -201,14 +208,45 @@ final class OutputCanvas: NSView {
         presentationDidChange()
     }
     private func presentationDidChange() {
+        // Hidden tabs, remote-mode previews and occluded windows catch up once visible.
+        guard isVisibleForUpdates else { return }
         needsDisplay = true
+        updateAccessibility()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        for observer in visibilityObservers { NotificationCenter.default.removeObserver(observer) }
+        visibilityObservers.removeAll()
+        if let window {
+            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                         NSWindow.didDeminiaturizeNotification] {
+                visibilityObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    self?.visibilityDidChange()
+                })
+            }
+        }
+        visibilityDidChange()
+    }
+    override func viewDidHide() { super.viewDidHide(); visibilityDidChange() }
+    override func viewDidUnhide() { super.viewDidUnhide(); visibilityDidChange() }
+    private func visibilityDidChange() {
+        let visible = isVisibleForUpdates
+        let becameVisible = visible && !wasVisible
+        wasVisible = visible
+        guard becameVisible else { return }
+        onVisible?()
+        presentationDidChange()
+    }
+    override func accessibilityLabel() -> String? {
+        // Explicit accessibility queries also work for an offscreen canvas.
+        updateAccessibility()
+        return super.accessibilityLabel()
+    }
+    private func updateAccessibility() {
         guard accessibilitySource != self.content || accessibilityRevision != presentation.revision else { return }
         accessibilitySource = self.content; accessibilityRevision = presentation.revision
         var content = presentation.template.contentForDisplay(self.content)
-        let layout = presentation.template.enabled
-            ? CanvasTextLayout.lowerThird(content: self.content, style: style, template: presentation.template)
-            : CanvasTextLayout.make(content: self.content, style: style, template: presentation.template)
-        content.body = layout.bodyText
+        if content.visible { content.body = presentation.textLayout.bodyText }
         if accessibleContent != content {
             accessibleContent = content
             setAccessibilityLabel(content.visible ? [content.title, content.body, content.footer].filter { !$0.isEmpty }.joined(separator: "\n") : "Output blank — keying background")
@@ -247,7 +285,7 @@ final class OutputCanvas: NSView {
             let content = presentation.displayedContent
             let textStyle = style.forDisplay(content: content, template: presentation.template)
             drawText(presentation.template.contentForDisplay(content),
-                     layout: CanvasTextLayout.make(content: content, style: style, template: presentation.template), style: textStyle)
+                     layout: presentation.displayedTextLayout, style: textStyle)
         }
     }
     /// Rasterize only when content/design changes. Animation frames move or clip
@@ -274,7 +312,7 @@ final class OutputCanvas: NSView {
         }
         var textStyle = style; textStyle.alignment = template.alignment
         let content = template.contentForDisplay(presentation.displayedContent)
-        drawText(content, layout: .lowerThird(content: content, style: style, template: template), style: textStyle)
+        drawText(content, layout: presentation.displayedTextLayout, style: textStyle)
         NSGraphicsContext.restoreGraphicsState()
         return cg.makeImage().map { NSImage(cgImage: $0, size: NSSize(width: 1920, height: 1080)) }
     }
@@ -322,5 +360,8 @@ final class OutputCanvas: NSView {
         draw(layout.bodyText, rect: layout.body, size: layout.bodyFontSize)
         draw(content.footer, rect: layout.footer, size: layout.footerFontSize, bold: false)
     }
-    deinit { if let observation { presentation.removeObserver(observation) } }
+    deinit {
+        if let observation { presentation.removeObserver(observation) }
+        for observer in visibilityObservers { NotificationCenter.default.removeObserver(observer) }
+    }
 }

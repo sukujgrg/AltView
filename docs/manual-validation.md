@@ -1,3 +1,9 @@
+## Shared layouts and output sleep prevention — 5 October 2026
+
+- `make test` passed all **150 app tests** and **104 offline release regression tests**. Seven added regressions cover shared fitting across drawing/previews/accessibility/status, fitting-input invalidation, bounded cache eviction, retained exit layouts, hidden-preview catch-up, matching Text/Design drafts, and balanced presentation activity tokens.
+- The universal Release build passed. Both Intel and Apple Silicon executables declare macOS **12.0** minimum. Output sleep prevention covers the keying background as well as visible text, and releases on close, minimization, display disconnection and controller teardown.
+- Real HDMI disconnect/reconnect and idle-sleep behavior remain manual checks in the workflow below.
+
 ## Saved templates and compact lyrics
 
 Automated validation: all **143 app tests** and **104 offline release regression tests** pass. Coverage includes migration, per-profile persistence and PNG reload, private drafts, output-profile artwork validation and recovery, healthy publication while editing an unavailable profile, alignment preservation during typography edits, reverting imports across profiles, sender-driven artwork changes, empty-Hide exit preservation, glyph-width joining boundaries, multilingual lyrics, measured/rendered/accessibility agreement, and compact workspace geometry in light/dark appearances. Separate eight-line and nine-line stanzas at a 93 pt preferred size now compact after the initial height fit; the final font is larger than the original fitted font, every joined row remains within its width, and both banner and full-canvas layouts fit their available height. Text is never shrunk to force joining. Physical HDMI/ATEM and VoiceOver checks remain below.
@@ -116,6 +122,8 @@ Earlier opt-in implementation, 30 September 2026: all 82 tests passed (`build/Cu
 - Stop Presenting during connection/takeover. No late text or draft design may appear. Hide during publication must not leave Design locked. Subsequent text edits during connection stay private.
 - Invalid geometry or a required missing PNG blocks local publishing with an explanation. Revert restores all design properties and applied artwork. Closing/quitting from any page protects the draft.
 - Output: select Preview Window or the intended external display and Open Output. Only the live composition should appear. Drafts and samples never go to that window.
+- With output open, check `pmset -g assertions` for AltView's idle system/display sleep prevention. Hide Text and confirm the keying background stays awake. Close or minimize output, disconnect the selected display, and quit; confirm AltView releases its assertions each time. Reopen, restore or reconnect output and confirm sleep prevention resumes. Receiving and private previews alone must not hold assertions.
+- With long text or compact lyrics, switch between Output, Design and Text, minimize/restore the workspace, and cover/uncover it. Each preview and its readability/accessibility text must catch up to the latest content when visible, without changing the HDMI output or restarting its transition.
 - Another Mac: discovery excludes this receiver, optional manual host/port works, wrong-code retry stays in the sheet, Return/Escape work, Connect Only preserves privacy, and Connect & Publish Text sends only text. Local Design changes remain local.
 - Inspect minimum window size, multilingual text, keyboard navigation and VoiceOver on the intended machine.
 

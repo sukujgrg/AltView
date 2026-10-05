@@ -67,6 +67,8 @@ AltView is a generic canvas, with optional position and content-height controls.
 
 The output contains only the composition and the keying background. App status, pairing, and controls stay on the receiver window. **Command-Shift-O** closes the output. A disconnected output display does not cause the app to cover another display; it waits for the chosen display to return. Prefer 16:9: other display shapes retain the same keying colour around the 16:9 content area.
 
+An open output window prevents idle system and display sleep, including while text is hidden and the keying background remains on screen. Closing or minimizing output, disconnecting its selected display, or quitting releases sleep prevention. Restoring output resumes it. Receiving alone and private Text/Design previews allow normal idle sleep.
+
 ## Reusable lower thirds
 
 ### Text templates for sending apps

@@ -120,8 +120,12 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
     private var artworkMessage = ""
     private var validationMessage = ""
     private var invalidFields: Set<ObjectIdentifier> = []
-    private let presentation = CanvasPresentation()
-    private lazy var preview = OutputCanvas(presentation: presentation)
+    private let presentation: CanvasPresentation
+    private lazy var preview: OutputCanvas = {
+        let canvas = OutputCanvas(presentation: presentation)
+        canvas.onVisible = { [weak self] in self?.refreshPreview() }
+        return canvas
+    }()
     private let guides = LowerThirdGuidesView()
     private lazy var enabled = NSButton(checkboxWithTitle: "Use lower-third layout", target: self, action: #selector(controlsChanged))
     private lazy var showArtwork = NSButton(checkboxWithTitle: "Artwork", target: self, action: #selector(controlsChanged))
@@ -154,8 +158,9 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         return template != appliedTemplate || style != appliedStyle
     }
 
-    init(artworkStore: PNGArtworkStore = PNGArtworkStore()) {
+    init(artworkStore: PNGArtworkStore = PNGArtworkStore(), layoutCache: CanvasTextLayoutCache = CanvasTextLayoutCache()) {
         self.artworkStore = artworkStore
+        presentation = CanvasPresentation(layoutCache: layoutCache)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "AltView — Lower Third"
@@ -599,9 +604,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         guides.isHidden = showGuides.state != .on || !previewTemplate.enabled
         replayButton.isEnabled = sample.visible && previewTemplate.enabled && template.animation != .none && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         replayButton.toolTip = replayButton.isEnabled ? "Replay this preview without changing output." : "Choose Slide or Reveal and turn off macOS Reduce Motion to preview animation."
-        let textSize = previewTemplate.enabled
-            ? CanvasTextLayout.lowerThird(content: sample, style: style, template: template).bodyFontSize
-            : CanvasTextLayout.make(content: sample, style: style, template: template).bodyFontSize
+        let textSize = sample.visible && preview.isVisibleForUpdates ? presentation.textLayout.bodyFontSize : CGFloat(style.fontSize)
         if !validationMessage.isEmpty { feedback.stringValue = validationMessage; feedback.textColor = .systemOrange }
         else if let warning = outputArtworkWarning { feedback.stringValue = warning; feedback.textColor = .systemOrange }
         else if sample.visible && textSize < 28 {
