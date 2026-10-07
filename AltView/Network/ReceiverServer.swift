@@ -2,15 +2,25 @@ import Foundation
 import Network
 import os
 
+struct ReceiverConnection: Equatable {
+    let id: UUID
+    let senderID: UUID
+    let name: String
+    let isPresenting: Bool
+    let isDisconnected: Bool
+}
+
 struct ReceiverStatus: Equatable {
     var listening = false
     var starting = false
     var port: UInt16?
     var connections = 0
     var connectedSenders: [SenderIdentity] = []
+    var senderConnections: [ReceiverConnection] = []
     var ownerID: UUID?
     var ownerName: String?
     var content = DisplayContent.empty
+    var confidenceContent = ConfidenceText.empty
     var message = "Receiving is off"
 }
 
@@ -19,6 +29,8 @@ final class ReceiverServer {
     private let queue = DispatchQueue(label: "com.suku.AltView.receiver", qos: .userInitiated)
     private var listener: NWListener?
     private var peers: [UUID: PeerChannel] = [:]
+    private var disconnectedSenders: [UUID: SenderIdentity] = [:]
+    private var peerCapabilities: [UUID: Set<String>] = [:]
     private var outputReadiness = OutputReadiness.closed
     private var templatePolicy = TemplatePolicy.sender
     private var state = ReceiverState()
@@ -78,6 +90,11 @@ final class ReceiverServer {
                     self.status.starting = false
                     self.status.listening = true
                     self.status.port = listener.port?.rawValue
+                    if request.advertise, let port = self.status.port {
+                        var record = ["receiverID": self.receiverID.uuidString, "port": String(port)]
+                        record["localMarker"] = LocalReceiverMarker.current
+                        listener.service = NWListener.Service(name: request.name, type: AltViewProtocol.serviceType, txtRecord: NWTXTRecord(record))
+                    }
                     self.status.message = "Ready for senders"
                     AltViewLog.receiver.notice("listener_ready port=\(self.status.port ?? 0) protocol=\(AltViewProtocol.version)")
                     self.publish()
@@ -158,6 +175,23 @@ final class ReceiverServer {
         }
     }
     func stop() { queue.async { [weak self] in self?.stopOnQueue(); self?.publish() } }
+    /// A receiver-side disconnect also refuses automatic retries from this sender
+    /// until the operator allows it again, or this receiver process exits.
+    func disconnectConnection(_ connectionID: UUID) {
+        queue.async { [weak self] in
+            guard let self, let identity = self.state.senders[connectionID],
+                  let peer = self.peers[connectionID] else { return }
+            self.disconnectedSenders[identity.id] = identity
+            peer.close(nil)
+        }
+    }
+    func allowReconnect(senderID: UUID) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.disconnectedSenders.removeValue(forKey: senderID)
+            self.publish()
+        }
+    }
     func clearOutput() {
         queue.async { [weak self] in
             guard let self else { return }
@@ -180,6 +214,7 @@ final class ReceiverServer {
         listener?.cancel(); listener = nil
         let closing = Array(peers.values)
         peers.removeAll()
+        peerCapabilities.removeAll()
         for peer in closing { peer.onClose = nil; peer.close(nil) }
         state = ReceiverState()
         status = ReceiverStatus()
@@ -201,6 +236,7 @@ final class ReceiverServer {
             let wasOwner = self.state.ownerConnection == peer.id
             AltViewLog.receiver.notice("sender_disconnected peer=\(peer.id.uuidString, privacy: .public) cause=\(peer.closeCause?.rawValue ?? "unknown", privacy: .public) was_owner=\(wasOwner) accepted_revision=\(wasOwner ? self.state.revision : 0) lease=\(wasOwner ? (self.state.lease?.uuidString ?? "none") : "none", privacy: .public)")
             self.state.disconnect(peer.id)
+            self.peerCapabilities.removeValue(forKey: peer.id)
             if wasOwner { self.status.message = "Sender disconnected — output cleared" }
             self.broadcastOwnership()
             self.publish()
@@ -215,13 +251,21 @@ final class ReceiverServer {
     private func handle(_ message: WireMessage, from peer: PeerChannel) {
         guard message.version == AltViewProtocol.version else { peer.close("Unsupported protocol version."); return }
         if message.kind == .hello {
+            if let id = message.senderID, disconnectedSenders[id] != nil {
+                peer.close("Disconnected by the receiving Mac."); return
+            }
             guard let id = message.senderID, let name = message.name, state.register(connection: peer.id, senderID: id, name: name) else {
                 peer.close("Invalid sender identity."); return
             }
             peer.markHandshakeComplete()
+            guard (message.capabilities?.count ?? 0) <= 32,
+                  message.capabilities?.allSatisfy({ $0.utf8.count <= 64 }) ?? true else { peer.close("Invalid capabilities."); return }
+            let negotiated = Set(message.capabilities ?? []).intersection(AltViewProtocol.capabilities)
+            peerCapabilities[peer.id] = negotiated
             AltViewLog.receiver.notice("sender_identified peer=\(peer.id.uuidString, privacy: .public) occupied=\(self.state.ownerConnection != nil)")
             peer.send(WireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name,
-                                 templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy))
+                                 templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy,
+                                 capabilities: negotiated.sorted()))
             sendFeedback(to: peer)
             publish()
             return
@@ -243,7 +287,8 @@ final class ReceiverServer {
             guard let lease = message.lease, let revision = message.revision, let content = message.content, content.isValid else {
                 peer.close("Invalid content snapshot."); return
             }
-            if state.apply(connection: peer.id, lease: lease, revision: revision, content: content) {
+            if state.apply(connection: peer.id, lease: lease, revision: revision, content: content,
+                           supportsConfidence: peerCapabilities[peer.id]?.contains(AltViewProtocol.confidenceText) == true) {
                 AltViewLog.receiver.info("snapshot_accepted peer=\(peer.id.uuidString, privacy: .public) lease=\(lease.uuidString, privacy: .public) revision=\(revision) visible=\(content.visible) title_bytes=\(content.title.utf8.count) body_bytes=\(content.body.utf8.count) footer_bytes=\(content.footer.utf8.count) output=\(self.outputReadiness.rawValue, privacy: .public)")
                 publish()
                 sendFeedback(to: peer)
@@ -275,16 +320,30 @@ final class ReceiverServer {
         let hasSnapshot = state.ownerConnection == peer.id && state.revision > 0
         peer.send(WireMessage(kind: .feedback, lease: hasSnapshot ? state.lease : nil,
                               revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness,
-                              templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy))
+                              templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy,
+                              capabilities: peerCapabilities[peer.id]?.sorted()))
     }
     private func publish() {
         status.connections = state.senders.count
         status.connectedSenders = state.senders.values.sorted {
             $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name < $1.name
         }
+        let active = state.senders.map { connectionID, identity in
+            ReceiverConnection(id: connectionID, senderID: identity.id, name: identity.name,
+                               isPresenting: state.ownerConnection == connectionID, isDisconnected: false)
+        }
+        let activeIDs = Set(active.map(\.senderID))
+        let disconnected = disconnectedSenders.values.filter { !activeIDs.contains($0.id) }.map {
+            ReceiverConnection(id: $0.id, senderID: $0.id, name: $0.name, isPresenting: false, isDisconnected: true)
+        }
+        status.senderConnections = (active + disconnected).sorted {
+            if $0.isDisconnected != $1.isDisconnected { return !$0.isDisconnected }
+            return $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
         status.ownerID = state.owner?.id
         status.ownerName = state.owner?.name
         status.content = state.content
+        status.confidenceContent = state.confidenceContent
         delivery.offer(status)
     }
 }

@@ -290,6 +290,47 @@ final class NetworkTests: XCTestCase {
         eventually("remote receiver discovered") { receivers.contains { $0.receiverID == remoteID } }
         XCTAssertFalse(receivers.contains { $0.receiverID == localID })
     }
+    func testIndividualDisconnectPreservesOtherSenderAndRefusesRetriesUntilAllowed() throws {
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus(), activeStatus = SenderStatus(), idleStatus = SenderStatus()
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        let active = SenderClient(name: "Same Name") { activeStatus = $0 }
+        let idle = SenderClient(name: "Same Name") { idleStatus = $0 }
+        defer { active.disconnect(); idle.disconnect(); server.stop() }
+        server.start(name: "Individual disconnect test", key: key, advertise: false)
+        eventually("listening") { output.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!)
+        active.connect(to: endpoint, key: key); idle.connect(to: endpoint, key: key)
+        eventually("both connected") { output.connections == 2 && activeStatus.connected && idleStatus.connected }
+        active.submit(.scripture); active.takeOutput()
+        eventually("one presenting") { output.ownerID == active.senderID && output.content == .scripture }
+        let idleConnection = try XCTUnwrap(output.senderConnections.first { $0.senderID == idle.senderID })
+        XCTAssertFalse(idleConnection.isPresenting)
+        server.disconnectConnection(idleConnection.id)
+        eventually("idle disconnected independently") { output.connections == 1 && !idleStatus.connected && output.senderConnections.contains { $0.senderID == idle.senderID && $0.isDisconnected } }
+        XCTAssertEqual(output.content, .scripture)
+        XCTAssertEqual(output.ownerID, active.senderID)
+        // Force a new connection with the same authenticated sender identity;
+        // an operator disconnect must not be undone by an automatic retry.
+        idle.connect(to: endpoint, key: key)
+        eventually("retry refused") { idleStatus.failureReason != nil }
+        XCTAssertEqual(output.connections, 1)
+        server.allowReconnect(senderID: idle.senderID)
+        idle.connect(to: endpoint, key: key)
+        eventually("allowed idle sender reconnects") { output.connections == 2 && idleStatus.connected }
+        server.disconnectConnection(idleConnection.id)
+        let settled = expectation(description: "stale disconnect cannot close the replacement session")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        XCTAssertEqual(output.connections, 2)
+        let activeConnection = try XCTUnwrap(output.senderConnections.first { $0.senderID == active.senderID })
+        XCTAssertTrue(activeConnection.isPresenting)
+        server.disconnectConnection(activeConnection.id)
+        eventually("active sender disconnected and both outputs cleared") { output.connections == 1 && output.ownerID == nil && output.content == .empty && output.confidenceContent == .empty }
+        XCTAssertTrue(idleStatus.connected)
+        XCTAssertTrue(output.listening)
+    }
+
     private func eventually(_ description: String, timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line, _ predicate: @escaping () -> Bool) {
         let done = expectation(description: description)
         let deadline = ProcessInfo.processInfo.systemUptime + timeout

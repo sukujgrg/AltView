@@ -1,6 +1,8 @@
 import AppKit
 
 enum UI {
+    static let previewInspectorWidth: CGFloat = 300
+    static let previewColumnGap: CGFloat = 24
     static func label(_ text: String, size: CGFloat = 13, color: NSColor = .labelColor, bold: Bool = false) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular)
@@ -64,9 +66,9 @@ enum UI {
         }
         return box
     }
-    /// A fixed canvas stage that fits the 16:9 preview at any workspace height.
+    /// A canvas stage that fits the selected preview shape at any workspace height.
     /// These surroundings belong to the controls only, never to HDMI output.
-    static func canvasStage(_ canvas: NSView, overlay: NSView? = nil) -> NSView {
+    static func canvasStage(_ canvas: NSView, overlay: NSView? = nil) -> WorkspaceCanvasStage {
         let stage = WorkspaceCanvasStage(canvas, overlay: overlay)
         // Long preview notes may need a little extra height in a compact window.
         // Let the canvas yield that space instead of enlarging the window.
@@ -74,6 +76,14 @@ enum UI {
         minimumHeight.priority = NSLayoutConstraint.Priority(749)
         minimumHeight.isActive = true
         return stage
+    }
+    /// Keep both output pages' preview areas identical, including room for status.
+    static func monitorPreview(heading: NSView, stage: WorkspaceCanvasStage, footer: NSView) -> NSStackView {
+        let notes = scrolling(footer)
+        notes.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        let monitor = column(heading, stage, notes, spacing: 12)
+        monitor.distribution = .fill
+        return monitor
     }
     static func scrolling(_ content: NSView, fillsHeight: Bool = false) -> NSScrollView {
         let scroll = NSScrollView()
@@ -105,14 +115,18 @@ enum UI {
 
 /// Fit the monitor inside the allocated space without letting the preview’s
 /// preferred aspect ratio impose a minimum size on the surrounding window.
-private final class WorkspaceCanvasStage: NSView {
+final class WorkspaceCanvasStage: NSView {
     private let canvas: NSView
     private let overlay: NSView?
+    var aspectRatio = PreviewAspectRatio.widescreen {
+        didSet { needsLayout = true }
+    }
     init(_ canvas: NSView, overlay: NSView?) {
         self.canvas = canvas; self.overlay = overlay
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
+        // A slate surround makes the monitor's edges visible against black output.
+        layer?.backgroundColor = NSColor(srgbRed: 0.20, green: 0.23, blue: 0.27, alpha: 1).cgColor
         layer?.cornerRadius = 8
         layer?.masksToBounds = true
         addSubview(canvas)
@@ -121,11 +135,51 @@ private final class WorkspaceCanvasStage: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layout() {
         super.layout()
-        let width = min(bounds.width, bounds.height * 16 / 9)
-        let height = width * 9 / 16
+        let width = min(bounds.width, bounds.height * aspectRatio.value)
+        let height = width / aspectRatio.value
         let frame = NSRect(x: (bounds.width - width) / 2, y: (bounds.height - height) / 2, width: width, height: height)
         canvas.frame = frame
         overlay?.frame = frame
+    }
+}
+
+enum PreviewAspectRatio: String, CaseIterable {
+    case widescreen = "16:9", computer = "16:10", standard = "4:3"
+    var value: CGFloat {
+        switch self {
+        case .widescreen: return 16.0 / 9
+        case .computer: return 16.0 / 10
+        case .standard: return 4.0 / 3
+        }
+    }
+}
+
+/// Preview shape is a local workspace preference; output still follows its display.
+final class PreviewAspectRatioPicker: NSPopUpButton {
+    private let stage: WorkspaceCanvasStage
+    private let defaults: UserDefaults
+    private let preferenceKey: String
+    init(stage: WorkspaceCanvasStage, defaults: UserDefaults, role: String) {
+        self.stage = stage; self.defaults = defaults
+        preferenceKey = "\(role.lowercased())PreviewAspectRatio"
+        super.init(frame: .zero, pullsDown: false)
+        controlSize = .small
+        font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        addItems(withTitles: PreviewAspectRatio.allCases.map(\.rawValue))
+        let saved = defaults.string(forKey: preferenceKey).flatMap(PreviewAspectRatio.init(rawValue:)) ?? .widescreen
+        selectItem(withTitle: saved.rawValue)
+        stage.aspectRatio = saved
+        setAccessibilityLabel("\(role) preview aspect ratio")
+        toolTip = "Preview monitor aspect ratio"
+        target = self; action = #selector(selectionChanged)
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func selectionChanged() {
+        guard let title = titleOfSelectedItem, let ratio = PreviewAspectRatio(rawValue: title) else { return }
+        stage.aspectRatio = ratio
+        defaults.set(ratio.rawValue, forKey: preferenceKey)
     }
 }
 

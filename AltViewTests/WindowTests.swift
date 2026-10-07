@@ -10,6 +10,133 @@ private final class LayoutTestWindow: NSWindow {
 }
 
 final class WindowTests: XCTestCase {
+    func testAudienceAndConfidencePreviewFramesMatchAcrossWindowSizes() throws {
+        _ = NSApplication.shared
+        let domain = "AltViewTests.MatchingPreviews.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let window = LayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
+                                      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0, window: window)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        controller.showWindow(nil)
+        let root = try XCTUnwrap(window.contentView)
+        for size in [NSSize(width: 1160, height: 650), NSSize(width: 1480, height: 900)] {
+            window.setContentSize(size)
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                window.appearance = NSAppearance(named: appearance)
+                for ratio in PreviewAspectRatio.allCases {
+                    var frames: [(stage: NSRect, canvas: NSRect)] = []
+                    for role in ["Audience", "Confidence"] {
+                        if role == "Audience" { controller.showReceiverPage() } else { controller.showConfidencePage() }
+                        let picker = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first)
+                        picker.selectItem(withTitle: ratio.rawValue); picker.sendAction(picker.action, to: picker.target)
+                        root.layoutSubtreeIfNeeded()
+                        let stage = try XCTUnwrap(descendants(root).compactMap { $0 as? WorkspaceCanvasStage }.first)
+                        let canvas = try XCTUnwrap(stage.subviews.first)
+                        frames.append((stage.convert(stage.bounds, to: root), canvas.convert(canvas.bounds, to: root)))
+                        if role == "Audience" {
+                            for title in ["Edit Audience Design", "Clear & Release"] {
+                                let control = try button(title, in: root)
+                                XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
+                                XCTAssertFalse(control.visibleRect.isEmpty)
+                            }
+                        }
+                        if size.width == 1160 && ratio == .computer {
+                            let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+                            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                                root.cacheDisplay(in: root.bounds, to: bitmap)
+                            }
+                            let image = NSImage(size: root.bounds.size)
+                            image.lockFocus()
+                            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                                NSColor.windowBackgroundColor.setFill(); root.bounds.fill()
+                            }
+                            let snapshot = NSImage(size: root.bounds.size); snapshot.addRepresentation(bitmap)
+                            snapshot.draw(in: root.bounds, from: .zero, operation: .sourceOver, fraction: 1)
+                            image.unlockFocus()
+                            let png = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation))?.representation(using: .png, properties: [:]))
+                            try png.write(to: URL(fileURLWithPath: "/private/tmp/altview-matched-\(role.lowercased())-\(appearance.rawValue).png"))
+                        }
+                    }
+                    XCTAssertEqual(frames[0].stage, frames[1].stage, "Preview surroundings must match for \(ratio.rawValue)")
+                    XCTAssertEqual(frames[0].canvas, frames[1].canvas, "Monitor sizes must match for \(ratio.rawValue)")
+                }
+            }
+        }
+    }
+
+    func testPreviewAspectRatiosResizeIndependentlyAndRestoreSelections() throws {
+        _ = NSApplication.shared
+        let domain = "AltViewTests.PreviewRatios.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let window = LayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
+                                      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0, window: window)
+        defer { controller.shutdown(); controller.close() }
+        controller.showReceiverPage(); controller.showWindow(nil)
+        let root = try XCTUnwrap(window.contentView)
+        let pickers = descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }
+        let audience = try XCTUnwrap(pickers.first { $0.accessibilityLabel() == "Audience preview aspect ratio" })
+        XCTAssertEqual(audience.itemTitles, ["16:9", "16:10", "4:3"])
+        let audienceCanvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        for ratio in PreviewAspectRatio.allCases {
+            audience.selectItem(withTitle: ratio.rawValue)
+            audience.sendAction(audience.action, to: audience.target)
+            root.layoutSubtreeIfNeeded()
+            XCTAssertEqual(audienceCanvas.bounds.width / audienceCanvas.bounds.height, ratio.value, accuracy: 0.01)
+            XCTAssertTrue(root.bounds.contains(audience.convert(audience.bounds, to: root)))
+            XCTAssertNil(defaults.string(forKey: "confidencePreviewAspectRatio"))
+        }
+        controller.showConfidencePage()
+        let confidence = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first { $0.accessibilityLabel() == "Confidence preview aspect ratio" })
+        XCTAssertEqual(confidence.itemTitles, ["16:9", "16:10", "4:3"])
+        XCTAssertEqual(confidence.titleOfSelectedItem, "16:9")
+        let confidenceCanvas = try XCTUnwrap(descendants(root).compactMap { $0 as? ConfidenceCanvas }.first)
+        for ratio in PreviewAspectRatio.allCases {
+            confidence.selectItem(withTitle: ratio.rawValue)
+            confidence.sendAction(confidence.action, to: confidence.target)
+            root.layoutSubtreeIfNeeded()
+            XCTAssertEqual(confidenceCanvas.bounds.width / confidenceCanvas.bounds.height, ratio.value, accuracy: 0.01)
+            XCTAssertTrue(root.bounds.contains(confidence.convert(confidence.bounds, to: root)))
+            XCTAssertEqual(audience.titleOfSelectedItem, "4:3")
+        }
+        confidence.selectItem(withTitle: "16:10")
+        confidence.sendAction(confidence.action, to: confidence.target)
+        controller.showDesignPage()
+        let design = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first { $0.accessibilityLabel() == "Design preview aspect ratio" })
+        XCTAssertEqual(design.itemTitles, ["16:9", "16:10", "4:3"])
+        XCTAssertEqual(design.titleOfSelectedItem, "16:9")
+        let designCanvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        let apply = try button("Apply Changes", in: root)
+        let initiallyEnabled = apply.isEnabled
+        for ratio in PreviewAspectRatio.allCases {
+            design.selectItem(withTitle: ratio.rawValue); design.sendAction(design.action, to: design.target)
+            root.layoutSubtreeIfNeeded()
+            XCTAssertEqual(designCanvas.bounds.width / designCanvas.bounds.height, ratio.value, accuracy: 0.01)
+            XCTAssertTrue(root.bounds.contains(design.convert(design.bounds, to: root)))
+            XCTAssertEqual(apply.isEnabled, initiallyEnabled, "Preview shape must not change the design draft")
+            XCTAssertEqual(audience.titleOfSelectedItem, "4:3")
+            XCTAssertEqual(confidence.titleOfSelectedItem, "16:10")
+            let stage = try XCTUnwrap(designCanvas.superview)
+            XCTAssertEqual(stage.subviews.last?.frame, designCanvas.frame, "Layout guides must follow the resized monitor")
+        }
+        design.selectItem(withTitle: "16:10"); design.sendAction(design.action, to: design.target)
+        let back = try button("Back to Audience", in: root)
+        XCTAssertNotNil(back.image); XCTAssertEqual(back.imagePosition, .imageLeading)
+        back.performClick(nil)
+        XCTAssertEqual(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first?.accessibilityLabel(), "Audience preview aspect ratio")
+        let restored = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
+        defer { restored.shutdown(); restored.close() }
+        let restoredRoot = try XCTUnwrap(restored.window?.contentView)
+        restored.showReceiverPage()
+        XCTAssertEqual(descendants(restoredRoot).compactMap { $0 as? PreviewAspectRatioPicker }.first?.titleOfSelectedItem, "4:3")
+        restored.showConfidencePage()
+        XCTAssertEqual(descendants(restoredRoot).compactMap { $0 as? PreviewAspectRatioPicker }.first?.titleOfSelectedItem, "16:10")
+        restored.showDesignPage()
+        XCTAssertEqual(descendants(restoredRoot).compactMap { $0 as? PreviewAspectRatioPicker }.first?.titleOfSelectedItem, "16:10")
+    }
+
     func testHiddenPreviewDefersLayoutAndRedrawUntilVisible() throws {
         _ = NSApplication.shared
         var fits = 0
@@ -92,7 +219,7 @@ final class WindowTests: XCTestCase {
         XCTAssertTrue(begun.isEmpty)
         controller?.show(displayID: nil)
         XCTAssertEqual(begun.count, 1)
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Output" && $0.isVisible })
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Audience" && $0.isVisible })
         scene.update(content: .scripture, style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
         scene.update(content: .empty, style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
@@ -115,7 +242,7 @@ final class WindowTests: XCTestCase {
                 let token = NSObject(); begun.append(token); return token
             }, endActivity: { ended.append(ObjectIdentifier($0)) })
             teardown.show(displayID: nil)
-            lastWindow = NSApp.windows.first { $0.title == "AltView — Preview Output" && $0.isVisible }
+            lastWindow = NSApp.windows.first { $0.title == "AltView — Preview Audience" && $0.isVisible }
         }
         XCTAssertEqual(begun.count, 3)
         XCTAssertEqual(ended, begun.map { ObjectIdentifier($0) }, "Every activity ends exactly once, including teardown")
@@ -154,8 +281,7 @@ final class WindowTests: XCTestCase {
             controller.receiverStatus.ownerID == owner && controller.receiverStatus.content == hidden
         }
         XCTAssertEqual(title.stringValue, "Private draft edit", "Reconnect must preserve the private draft")
-        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
-        controller.showSettings(); wait(for: [closed], timeout: 3)
+        controller.showComposerPage()
 
         try button("Stop Presenting", in: root).performClick(nil)
         eventually("local ownership released") { controller.receiverStatus.ownerID == nil }
@@ -168,8 +294,7 @@ final class WindowTests: XCTestCase {
         }
         XCTAssertNil(controller.receiverStatus.ownerID)
         XCTAssertEqual(controller.receiverStatus.content, .empty)
-        let closedAgain = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
-        controller.showSettings(); wait(for: [closedAgain], timeout: 3)
+        controller.showComposerPage()
     }
 
     func testDefaultReceiversChooseIndependentPortsAndShowManualConnectionDetails() throws {
@@ -210,10 +335,7 @@ final class WindowTests: XCTestCase {
         eventually("local sender uses assigned port") { local != nil }
         XCTAssertEqual(local?.port, first.receiverStatus.port)
         XCTAssertEqual(local?.key, key)
-        // Let the transient popover finish closing before another test opens one.
-        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
-        first.showSettings()
-        wait(for: [closed], timeout: 3)
+        first.showReceiverPage()
     }
 
     func testReceiverPortRecoveryKeepsLocalPublicationWaiting() throws {
@@ -287,17 +409,170 @@ final class WindowTests: XCTestCase {
         eventually("listener ready") { controller.receiverStatus.port != nil }
         sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
         eventually("saved override in handshake") { status.connected && status.templateCapabilities.policy == .fixed(.lyrics) }
-        controller.showDesignPage()
+        controller.showReceiverPage()
         let root = try XCTUnwrap(controller.window?.contentView)
-        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Output template" })
+        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Audience template" })
         selection.selectItem(withTitle: "Scripture"); selection.sendAction(selection.action, to: selection.target)
         XCTAssertEqual(status.templateCapabilities.policy, .fixed(.lyrics), "A design draft is private")
-        try button("Apply Design to Output", in: root).performClick(nil)
+        try button("Apply Template", in: root).performClick(nil)
         eventually("applied override broadcast without publishing") { status.templateCapabilities.policy == .fixed(.scripture) }
         XCTAssertNil(controller.receiverStatus.ownerID)
         selection.selectItem(withTitle: "Custom layout"); selection.sendAction(selection.action, to: selection.target)
-        try button("Revert All Changes", in: root).performClick(nil)
-        XCTAssertEqual(status.templateCapabilities.policy, .fixed(.scripture))
+        XCTAssertEqual(status.templateCapabilities.policy, .fixed(.scripture), "An unapplied choice stays private")
+        selection.selectItem(withTitle: "Scripture"); selection.sendAction(selection.action, to: selection.target)
+        XCTAssertFalse(try button("Apply Template", in: root).isEnabled)
+    }
+
+    func testAudienceAssignmentIsSeparateFromDesignDraftsAndEditorOpensActiveDesign() throws {
+        let domain = "AltViewTests.AudienceDesignSeparation.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0)
+        var status = SenderStatus()
+        let sender = SenderClient(name: "ViewTheWord") { status = $0 }
+        defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver ready") { controller.receiverStatus.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
+        eventually("sender connected") { status.connected }
+        let source = DisplayContent(title: "Reference", body: "Actual verse", footer: "Translation", template: .scripture)
+        sender.submit(source); sender.takeOutput()
+        eventually("source accepted") { controller.receiverStatus.content == source }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Audience template"
+        })
+        controller.showDesignPage()
+        let profiles = try editingTemplate(in: root)
+        XCTAssertEqual(profiles.selectedSegment, DesignProfileID.allCases.firstIndex(of: .scripture))
+        let editor = try XCTUnwrap(try button("Choose PNG…", in: root).target as? LowerThirdWindowController)
+        XCTAssertTrue(descendants(editor.contentView).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue == "Audience uses Scripture · From ViewTheWord"
+        })
+        selectTemplate(.lyrics, in: profiles)
+        let font = try XCTUnwrap(descendants(editor.contentView).compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Draft font"
+        })
+        font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
+        XCTAssertTrue(editor.hasChanges)
+        controller.showReceiverPage()
+        assignment.selectItem(withTitle: "Lyrics"); assignment.sendAction(assignment.action, to: assignment.target)
+        XCTAssertEqual(status.templateCapabilities.policy, .sender)
+        try button("Apply Template", in: root).performClick(nil)
+        eventually("assignment broadcast") { status.templateCapabilities.policy == .fixed(.lyrics) }
+        var saved = try JSONDecoder().decode(TemplateDesignLibrary.self, from: XCTUnwrap(defaults.data(forKey: "templateDesignLibrary")))
+        XCTAssertEqual(saved.lyrics.style.fontName, "System", "Applying assignment must not publish pending design edits")
+        XCTAssertTrue(editor.hasChanges)
+        XCTAssertEqual(editor.draftLibrary?.lyrics.style.fontName, "Georgia")
+        controller.showDesignPage()
+        XCTAssertEqual(editor.editingProfile, .lyrics)
+        let canvas = try XCTUnwrap(descendants(editor.contentView).compactMap { $0 as? OutputCanvas }.first)
+        XCTAssertEqual(canvas.content.body, source.body)
+        XCTAssertEqual(canvas.style.fontName, "Georgia")
+        try button("Apply Changes", in: root).performClick(nil)
+        saved = try JSONDecoder().decode(TemplateDesignLibrary.self, from: XCTUnwrap(defaults.data(forKey: "templateDesignLibrary")))
+        XCTAssertEqual(saved.selection, .lyrics)
+        XCTAssertEqual(saved.lyrics.style.fontName, "Georgia")
+        XCTAssertEqual(controller.receiverStatus.ownerID, sender.senderID)
+        XCTAssertEqual(controller.receiverStatus.content, source)
+        XCTAssertFalse(editor.hasChanges)
+    }
+
+    func testAudienceTemplatePreviewUpdatesBeforeApplyAndKeepsLiveOutputSeparate() throws {
+        let domain = "AltViewTests.PendingAudiencePreview.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        var library = TemplateDesignLibrary()
+        library.custom.style.fontName = "Georgia"
+        try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
+        let key = try PairingKey.generate()
+        let live = CanvasPresentation(reduceMotion: { true })
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0, presentation: live)
+        var status = SenderStatus()
+        let sender = SenderClient(name: "Verse sender") { status = $0 }
+        defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver ready") { controller.receiverStatus.port != nil }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
+        eventually("sender connected") { status.connected }
+        var source = DisplayContent(title: "Reference", body: "Current verse", footer: "Translation", template: .scripture)
+        sender.submit(source); sender.takeOutput()
+        eventually("verse accepted") { live.content == source }
+        controller.showReceiverPage()
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Audience template"
+        })
+        let heading = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityIdentifier() == "audiencePreviewHeading"
+        })
+        XCTAssertTrue(canvas.presentation === live)
+        assignment.selectItem(withTitle: "Lyrics"); assignment.sendAction(assignment.action, to: assignment.target)
+        XCTAssertFalse(canvas.presentation === live)
+        XCTAssertEqual(canvas.presentation.template.textTemplate, .lyrics)
+        XCTAssertEqual(canvas.accessibilityLabel(), "Current verse")
+        XCTAssertEqual(heading.stringValue, "TEMPLATE PREVIEW · NOT APPLIED")
+        XCTAssertEqual(live.template.textTemplate, .scripture)
+        XCTAssertEqual(status.templateCapabilities.policy, .sender)
+        source.body = "Next verse"
+        sender.submit(source)
+        eventually("pending preview follows incoming text") { canvas.content.body == "Next verse" && live.content.body == "Next verse" }
+        XCTAssertEqual(canvas.presentation.template.textTemplate, .lyrics)
+        XCTAssertEqual(live.template.textTemplate, .scripture)
+        assignment.selectItem(withTitle: "From sending app"); assignment.sendAction(assignment.action, to: assignment.target)
+        XCTAssertTrue(canvas.presentation === live, "Returning to the applied choice restores the live preview and its animation clock")
+        XCTAssertEqual(canvas.accessibilityLabel(), "Reference\nNext verse\nTranslation")
+        XCTAssertEqual(heading.stringValue, "THIS MAC · AUDIENCE PREVIEW")
+        assignment.selectItem(withTitle: "Custom layout"); assignment.sendAction(assignment.action, to: assignment.target)
+        XCTAssertEqual(canvas.style.fontName, "Georgia")
+        XCTAssertEqual(live.style.fontName, "System")
+        try button("Apply Template", in: root).performClick(nil)
+        eventually("applied template advertised") { status.templateCapabilities.policy == .custom }
+        XCTAssertTrue(canvas.presentation === live)
+        XCTAssertEqual(live.template.textTemplate, .custom)
+        XCTAssertEqual(live.style.fontName, "Georgia")
+        XCTAssertEqual(live.content, source)
+        XCTAssertEqual(controller.receiverStatus.ownerID, sender.senderID)
+        assignment.selectItem(withTitle: "Lyrics"); assignment.sendAction(assignment.action, to: assignment.target)
+        sender.releaseOutput()
+        eventually("pending preview clears with ownership loss") { controller.receiverStatus.ownerID == nil && canvas.content == .empty && live.content == .empty }
+        XCTAssertEqual(canvas.presentation.template.textTemplate, .lyrics)
+    }
+
+    func testAudienceTemplateAssignmentWaitsForSavedArtworkRecovery() throws {
+        let domain = "AltViewTests.AudienceTemplateArtwork.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        var library = TemplateDesignLibrary()
+        library.lyrics.template.enabled = true; library.lyrics.template.artwork = .custom
+        library.lyrics.template.assetID = UUID(); library.lyrics.template.assetName = "missing.png"
+        try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Audience template"
+        })
+        let apply = try button("Apply Template", in: root)
+        let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        let live = canvas.presentation
+        assignment.selectItem(withTitle: "Lyrics"); assignment.sendAction(assignment.action, to: assignment.target)
+        XCTAssertFalse(apply.isEnabled)
+        XCTAssertEqual(canvas.presentation.template.textTemplate, .lyrics)
+        XCTAssertFalse(canvas.content.visible)
+        XCTAssertEqual(live.template.textTemplate, .custom)
+        apply.performClick(nil)
+        var saved = try JSONDecoder().decode(TemplateDesignLibrary.self, from: XCTUnwrap(defaults.data(forKey: "templateDesignLibrary")))
+        XCTAssertEqual(saved.selection, .sender)
+        controller.showDesignPage()
+        let profiles = try editingTemplate(in: root)
+        eventually("saved artwork lookup finished") { profiles.isEnabled }
+        selectTemplate(.lyrics, in: profiles)
+        try button("Artwork", in: root).performClick(nil)
+        try button("Apply Changes", in: root).performClick(nil)
+        controller.showReceiverPage()
+        XCTAssertTrue(apply.isEnabled, "The pending audience choice remains available after design recovery")
+        apply.performClick(nil)
+        saved = try JSONDecoder().decode(TemplateDesignLibrary.self, from: XCTUnwrap(defaults.data(forKey: "templateDesignLibrary")))
+        XCTAssertEqual(saved.selection, .lyrics)
+        XCTAssertFalse(saved.lyrics.template.showsArtwork)
     }
 
     func testComposerDiscoversFutureTemplatesAndKeepsSelectionPrivateAcrossCatalogueChanges() throws {
@@ -365,18 +640,19 @@ final class WindowTests: XCTestCase {
         let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), receiverPort: 0)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
-        window.setContentSize(NSSize(width: 980, height: 650))
+        window.setContentSize(NSSize(width: 1160, height: 650))
         controller.showDesignPage()
         let samples = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Design preview content" })
-        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Output template" })
+        let selection = try editingTemplate(in: root)
         for name in ["Scripture", "Lyrics"] {
+            selectTemplate(try XCTUnwrap(DesignProfileID(rawValue: name)), in: selection)
             samples.selectItem(withTitle: "Sample · \(name)"); samples.sendAction(samples.action, to: samples.target)
             root.layoutSubtreeIfNeeded()
             let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
             XCTAssertGreaterThan(preview.bounds.width, 400)
             XCTAssertEqual(preview.bounds.width / preview.bounds.height, 16.0 / 9, accuracy: 0.01)
             XCTAssertTrue(root.bounds.contains(selection.convert(selection.bounds, to: root)))
-            XCTAssertTrue(root.bounds.contains(try button("Apply Design to Output", in: root).convert(try button("Apply Design to Output", in: root).bounds, to: root)))
+            XCTAssertTrue(root.bounds.contains(try button("Apply Changes", in: root).convert(try button("Apply Changes", in: root).bounds, to: root)))
             let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
             root.cacheDisplay(in: root.bounds, to: bitmap)
             let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
@@ -384,7 +660,17 @@ final class WindowTests: XCTestCase {
             attachment.name = "Template-\(name)-compact"; attachment.lifetime = .keepAlways
             add(attachment)
         }
-        selection.selectItem(withTitle: "Lyrics"); selection.sendAction(selection.action, to: selection.target)
+        controller.showReceiverPage()
+        root.layoutSubtreeIfNeeded()
+        let audienceBitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+        root.cacheDisplay(in: root.bounds, to: audienceBitmap)
+        let audienceData = try XCTUnwrap(audienceBitmap.representation(using: .png, properties: [:]))
+        let audienceAttachment = XCTAttachment(data: audienceData, uniformTypeIdentifier: "public.png")
+        audienceAttachment.name = "Audience-template-compact"; audienceAttachment.lifetime = .keepAlways
+        add(audienceAttachment)
+        let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Audience template" })
+        assignment.selectItem(withTitle: "Lyrics"); assignment.sendAction(assignment.action, to: assignment.target)
+        try button("Apply Template", in: root).performClick(nil)
         controller.showComposerPage()
         XCTAssertEqual(descendants(root).compactMap { $0 as? NSTextField }.filter { $0.stringValue == "Hidden by Design · text is kept" }.count, 2)
         controller.showDesignPage()
@@ -402,7 +688,7 @@ final class WindowTests: XCTestCase {
         func picker(_ name: String) throws -> NSPopUpButton {
             try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == name })
         }
-        let selection = try picker("Output template")
+        let selection = try picker("Template")
         let samples = try picker("Design preview content")
         let alignment = try picker("Lower third text alignment")
         let title = try button("Title", in: root), footer = try button("Footer", in: root)
@@ -461,7 +747,7 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(controller.readiness, .asleep)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
         XCTAssertEqual(controller.readiness, .preview)
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Output" && $0.isVisible })
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Audience" && $0.isVisible })
         window.close()
         XCTAssertEqual(controller.readiness, .closed)
         controller.show(displayID: UInt32.max)
@@ -481,7 +767,7 @@ final class WindowTests: XCTestCase {
         sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
         eventually("closed reported") { status.feedback.output == .closed }
         let root = try XCTUnwrap(controller.window?.contentView)
-        try button("Open Output", in: root).performClick(nil)
+        try button("Open Display", in: root).performClick(nil)
         eventually("preview reported") { status.feedback.output == .preview }
         controller.closeOutput()
         eventually("close reported") { status.feedback.output == .closed }
@@ -521,16 +807,31 @@ final class WindowTests: XCTestCase {
             .first { $0.accessibilityIdentifier() == "workspaceSettingsContent" }
     }
     private func settingsContent(in controller: ReceiverWindowController) throws -> NSView {
+        controller.showConnectionsPage()
         let root = try XCTUnwrap(controller.window?.contentView)
-        let gear = try XCTUnwrap(descendants(root).compactMap { $0 as? NSButton }.first {
-            $0.accessibilityIdentifier() == "workspaceSettings"
+        root.layoutSubtreeIfNeeded()
+        return try XCTUnwrap(descendants(root).first {
+            $0.accessibilityIdentifier() == "workspaceConnectionsContent"
         })
-        gear.performClick(nil)
-        eventually("gear opens Settings") { self.visibleSettingsContent() != nil }
-        return try XCTUnwrap(visibleSettingsContent())
+    }
+    private func sidebar(in root: NSView) throws -> NSOutlineView {
+        try XCTUnwrap(descendants(root).compactMap { $0 as? NSOutlineView }.first)
+    }
+    private func sidebarTitles(_ navigation: NSOutlineView) -> [String] {
+        (0..<navigation.numberOfRows).compactMap { row in
+            guard let column = navigation.tableColumns.first,
+                  let item = navigation.item(atRow: row),
+                  let cell = navigation.delegate?.outlineView?(navigation, viewFor: column, item: item) as? NSTableCellView else { return nil }
+            return cell.textField?.stringValue
+        }
+    }
+    private func selectedSidebarTitle(_ navigation: NSOutlineView) -> String {
+        let titles = sidebarTitles(navigation)
+        return navigation.selectedRow >= 0 ? titles[navigation.selectedRow] : ""
     }
     private func settingsSwitch(in controller: ReceiverWindowController) throws -> NSSwitch {
-        let settings = try settingsContent(in: controller)
+        controller.showSettings()
+        let settings = try XCTUnwrap(visibleSettingsContent())
         return try XCTUnwrap(descendants(settings).compactMap { $0 as? NSSwitch }.first {
             $0.accessibilityIdentifier() == "enableCustomText"
         })
@@ -568,7 +869,7 @@ final class WindowTests: XCTestCase {
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "workspaceContentStatus" })
         let changes = try XCTUnwrap(descendants(root).first { $0.accessibilityIdentifier() == "textDraftStatus" })
         XCTAssertTrue(changes.isHidden, "Publishing must clear the change indicator")
-        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("Output window closed") })
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("Audience window closed") })
         keepSpace.performClick(nil)
         XCTAssertFalse(changes.isHidden)
         try button("Hide Text", in: root).performClick(nil)
@@ -604,21 +905,16 @@ final class WindowTests: XCTestCase {
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         root.layoutSubtreeIfNeeded()
-        let navigation = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSegmentedControl }.first)
-        XCTAssertEqual(navigation.segmentCount, 2)
-        XCTAssertEqual(navigation.label(forSegment: 0), "Output")
-        XCTAssertEqual(navigation.label(forSegment: 1), "Design")
-        XCTAssertEqual(navigation.selectedSegment, 0)
+        let navigation = try sidebar(in: root)
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "Confidence", "Setup", "Connections"])
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
         eventually("ready without a click") { controller.receiverStatus.listening }
         XCTAssertNil(controller.receiverStatus.ownerName)
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
-        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Ready to receive" })
-        let pair = try button("Pair a sender…", in: root)
-        XCTAssertFalse(pair.isHidden)
-        controller.showWindow(nil)
-        pair.performClick(nil)
-        eventually("pair shortcut opens Settings") { self.visibleSettingsContent() != nil }
-        let settings = try XCTUnwrap(visibleSettingsContent())
+        XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverListeningStatus" })
+        XCTAssertFalse(descendants(root).compactMap { $0 as? NSButton }.contains { $0.title == "Pair a sender…" })
+        let settings = try settingsContent(in: controller)
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Connections")
         settings.layoutSubtreeIfNeeded()
         let code = try field("Pairing code", in: settings)
         XCTAssertEqual(code.stringValue, PairingKey.text(try XCTUnwrap(controller.pairingKey)))
@@ -632,9 +928,7 @@ final class WindowTests: XCTestCase {
         let name = try field("Receiver name", in: settings)
         XCTAssertTrue(name.isEditable)
         name.stringValue = "Presentation Mac"
-        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
-        controller.showSettings()
-        wait(for: [closed], timeout: 3)
+        controller.showReceiverPage()
         controller.setCustomTextEnabled(true); controller.showComposerPage(); controller.showReceiverPage()
         XCTAssertFalse(controller.receiverStatus.listening)
         let reopenedSettings = try settingsContent(in: controller)
@@ -654,10 +948,10 @@ final class WindowTests: XCTestCase {
         let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
-        let navigation = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSegmentedControl }.first)
+        let navigation = try sidebar(in: root)
         eventually("receiver ready with Custom Text disabled") { controller.receiverStatus.listening }
         XCTAssertFalse(controller.customTextEnabled, "An existing saved draft must not opt the user in")
-        XCTAssertEqual(navigation.segmentCount, 2)
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "Confidence", "Setup", "Connections"])
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.allSatisfy { $0.accessibilityLabel() != "Text title" })
 
@@ -678,13 +972,13 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(toggle.state, .off)
         XCTAssertFalse(controller.customTextEnabled, "Opening Settings alone must not enable Custom Text")
         toggle.state = .on; toggle.sendAction(toggle.action, to: toggle.target)
-        XCTAssertEqual(navigation.label(forSegment: navigation.selectedSegment), "Design", "Settings keeps the current page in place")
-        controller.showSettings() // Dismiss the popover.
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience", "Design remains associated with Audience")
+        visibleSettingsContent()?.window?.close()
         controller.showComposerPage()
         XCTAssertTrue(controller.customTextEnabled)
         XCTAssertTrue(defaults.bool(forKey: "customTextEnabled"))
-        XCTAssertEqual(navigation.segmentCount, 3)
-        XCTAssertEqual(navigation.label(forSegment: navigation.selectedSegment), "Text")
+        XCTAssertEqual(sidebarTitles(navigation).filter { $0 == "Text" }.count, 1)
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Text")
         let composerPreview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
         XCTAssertEqual(composerPreview.content, draft)
         XCTAssertEqual(controller.receiverStatus.connections, 0)
@@ -695,16 +989,16 @@ final class WindowTests: XCTestCase {
         XCTAssertFalse(try button("Edit Text…", in: root).isHidden)
         try button("Edit Text…", in: root).performClick(nil)
         XCTAssertEqual(enableNotifications, 1)
-        XCTAssertEqual(navigation.segmentCount, 3, "Reopening Text must not duplicate its page")
+        XCTAssertEqual(sidebarTitles(navigation).filter { $0 == "Text" }.count, 1, "Reopening Text must not duplicate its page")
         controller.shutdown(); controller.close()
 
         let reopened = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0)
         defer { reopened.shutdown(); reopened.close() }
         let reopenedRoot = try XCTUnwrap(reopened.window?.contentView)
-        let restoredNavigation = try XCTUnwrap(descendants(reopenedRoot).compactMap { $0 as? NSSegmentedControl }.first)
+        let restoredNavigation = try sidebar(in: reopenedRoot)
         XCTAssertTrue(reopened.customTextEnabled)
-        XCTAssertEqual(restoredNavigation.segmentCount, 3)
-        XCTAssertEqual(restoredNavigation.label(forSegment: restoredNavigation.selectedSegment), "Output")
+        XCTAssertEqual(sidebarTitles(restoredNavigation).filter { $0 == "Text" }.count, 1)
+        XCTAssertEqual(selectedSidebarTitle(restoredNavigation), "Audience")
         eventually("reopened receiver ready") { reopened.receiverStatus.listening }
         XCTAssertEqual(reopened.receiverStatus.connections, 0)
         XCTAssertNil(reopened.receiverStatus.ownerID)
@@ -712,96 +1006,87 @@ final class WindowTests: XCTestCase {
         reopened.showComposerPage()
         XCTAssertEqual(try XCTUnwrap(descendants(reopenedRoot).compactMap { $0 as? OutputCanvas }.first).content, draft)
     }
-    func testConnectedSenderIsNamedAndOutputControlsStayCompact() throws {
-        let domain = "AltViewTests.PairingStatus.\(UUID())"
+    func testConnectionsAreSharedAndNativeSidebarTracksOutputAndDesignNavigation() throws {
+        let domain = "AltViewTests.Sidebar.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         let key = try PairingKey.generate()
         let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, receiverPort: 0, window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         controller.showWindow(nil)
-        let window = try XCTUnwrap(controller.window)
-        let root = try XCTUnwrap(window.contentView)
-        func label(_ id: String, in view: NSView) throws -> NSTextField {
-            try XCTUnwrap(descendants(view).compactMap { $0 as? NSTextField }.first { $0.accessibilityIdentifier() == id })
-        }
-        let status = try label("receiverListeningStatus", in: root)
-        let connection = try label("receiverConnectionStatus", in: root)
-        let pair = try button("Pair a sender…", in: root)
-        let display = try XCTUnwrap(descendants(root).first { $0.accessibilityLabel() == "Output display" && $0 is NSBox })
-        func checkLayout() {
-            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-                window.appearance = NSAppearance(named: appearance)
-                for size in [NSSize(width: 980, height: 650), NSSize(width: 1280, height: 900)] {
-                    window.setContentSize(size)
-                    root.layoutSubtreeIfNeeded()
-                    let statusFrame = status.convert(status.bounds, to: root)
-                    let connectionFrame = connection.convert(connection.bounds, to: root)
-                    let pairFrame = pair.convert(pair.bounds, to: root)
-                    let displayFrame = display.convert(display.bounds, to: root)
-                    XCTAssertLessThanOrEqual(statusFrame.minY - connectionFrame.maxY, 12)
-                    XCTAssertLessThanOrEqual(connectionFrame.minY - pairFrame.maxY, 12)
-                    XCTAssertGreaterThanOrEqual(pairFrame.minY - displayFrame.maxY, 0)
-                    XCTAssertLessThanOrEqual(pairFrame.minY - displayFrame.maxY, 24, "Pairing must not leave a growing gap above display controls")
-                    XCTAssertTrue(root.bounds.contains(displayFrame))
-                }
-            }
-        }
-        func attachLayout(_ view: NSView, name: String) throws {
-            view.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
-            attachment.name = name; attachment.lifetime = .keepAlways
-            add(attachment)
-        }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let navigation = try sidebar(in: root)
+        XCTAssertFalse(descendants(root).compactMap { $0 as? NSSegmentedControl }.contains { $0.accessibilityLabel() == "AltView workspace" })
+        controller.showConfidencePage()
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Confidence")
+        let connections = try settingsContent(in: controller)
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Connections")
+        let status = try XCTUnwrap(descendants(connections).compactMap { $0 as? NSTextField }.first { $0.accessibilityIdentifier() == "receiverPairingStatus" })
         eventually("receiver ready") { controller.receiverStatus.port != nil }
-        XCTAssertEqual(connection.stringValue, "No sender connected")
-        checkLayout()
-        pair.performClick(nil)
-        eventually("pair shortcut opens settings") { self.visibleSettingsContent() != nil }
-        let settings = try XCTUnwrap(visibleSettingsContent())
-        let pairingStatus = try label("receiverPairingStatus", in: settings)
-        XCTAssertEqual(pairingStatus.stringValue, "No sender connected")
-
-        var senderStatus = SenderStatus()
-        let sender = SenderClient(name: "Presentation Mac") { senderStatus = $0 }
+        XCTAssertEqual(status.stringValue, "No sender connected")
+        let sender = SenderClient(name: "Presentation Mac") { _ in }
         defer { sender.disconnect() }
         let endpoint = Network.NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!)
         sender.connect(to: endpoint, key: key)
-        eventually("paired without publishing") { senderStatus.connected && controller.receiverStatus.connections == 1 }
-        XCTAssertEqual(status.stringValue, "Sender connected")
-        XCTAssertEqual(connection.stringValue, "Connected to Presentation Mac")
-        XCTAssertEqual(pairingStatus.stringValue, connection.stringValue, "The open pairing popover confirms a successful connection")
-        XCTAssertEqual(pair.title, "Pair another sender…")
-        XCTAssertFalse(pair.isHidden)
+        eventually("paired without publishing") { controller.receiverStatus.connections == 1 }
+        XCTAssertEqual(status.stringValue, "1 sender connected")
         XCTAssertNil(controller.receiverStatus.ownerID)
-        try attachLayout(settings, name: "Connected sender in Settings")
-        let closed = expectation(forNotification: NSPopover.didCloseNotification, object: nil)
-        controller.showSettings(); wait(for: [closed], timeout: 3)
-        checkLayout()
-        try attachLayout(root, name: "Connected sender on Output")
-
         let second = SenderClient(name: "Second Mac") { _ in }
         defer { second.disconnect() }
         second.connect(to: endpoint, key: key)
-        eventually("both paired senders identified") { controller.receiverStatus.connections == 2 }
-        XCTAssertEqual(connection.stringValue, "Connected to Presentation Mac, Second Mac")
+        eventually("both named senders") { controller.receiverStatus.connections == 2 }
+        XCTAssertEqual(status.stringValue, "2 senders connected")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            controller.window?.appearance = NSAppearance(named: appearance)
+            for size in [NSSize(width: 1160, height: 650), NSSize(width: 1440, height: 900)] {
+                controller.window?.setContentSize(size)
+                root.layoutSubtreeIfNeeded()
+                for title in ["Copy Code", "Reset Code…", "Pause Receiving"] {
+                    let control = try button(title, in: connections)
+                    XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
+                }
+                let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+                root.cacheDisplay(in: root.bounds, to: bitmap)
+                let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/altview-connections-\(appearance.rawValue)-\(Int(size.width)).png"))
+                attachment.name = "Sidebar-Connections-\(appearance.rawValue)-\(Int(size.width))"
+                attachment.lifetime = .keepAlways; add(attachment)
+            }
+        }
+        let list = try XCTUnwrap(descendants(connections).compactMap { $0 as? NSTableView }.first { $0.accessibilityIdentifier() == "receiverSenderList" })
+        XCTAssertEqual(list.numberOfRows, 2)
+        func senderAction(_ senderID: UUID) throws -> NSButton {
+            let row = try XCTUnwrap(controller.receiverStatus.senderConnections.firstIndex { $0.senderID == senderID })
+            let cell = try XCTUnwrap(list.view(atColumn: 1, row: row, makeIfNecessary: true))
+            return try XCTUnwrap(descendants(cell).compactMap { $0 as? NSButton }.first)
+        }
         sender.submit(.scripture); sender.takeOutput()
-        eventually("receiving text") { controller.receiverStatus.content == .scripture }
-        XCTAssertEqual(status.stringValue, "Receiving text")
-        checkLayout()
-        sender.releaseOutput()
-        eventually("paired sender remains after release") { controller.receiverStatus.ownerID == nil }
-        XCTAssertEqual(status.stringValue, "Sender connected")
-        second.disconnect(); sender.disconnect()
-        eventually("senders disconnected") { controller.receiverStatus.connections == 0 }
-        XCTAssertTrue(controller.receiverStatus.connectedSenders.isEmpty)
-        XCTAssertEqual(status.stringValue, "Ready to receive")
-        XCTAssertEqual(connection.stringValue, "No sender connected")
-        XCTAssertEqual(pair.title, "Pair a sender…")
-        checkLayout()
+        eventually("sender is shown as presenting") { controller.receiverStatus.senderConnections.contains { $0.senderID == sender.senderID && $0.isPresenting } }
+        let disconnectIdle = try senderAction(second.senderID)
+        XCTAssertEqual(disconnectIdle.title, "Disconnect")
+        disconnectIdle.performClick(nil)
+        eventually("idle sender disconnected") { controller.receiverStatus.connections == 1 && controller.receiverStatus.senderConnections.contains { $0.senderID == second.senderID && $0.isDisconnected } }
+        XCTAssertEqual(controller.receiverStatus.content, .scripture)
+        let allow = try senderAction(second.senderID)
+        XCTAssertEqual(allow.title, "Allow Reconnect")
+        allow.performClick(nil)
+        eventually("idle sender automatically reconnects when allowed") { controller.receiverStatus.connections == 2 }
+        try senderAction(sender.senderID).performClick(nil)
+        eventually("disconnecting the presenter clears its output") { controller.receiverStatus.connections == 1 && controller.receiverStatus.ownerID == nil && controller.receiverStatus.content == .empty }
+        XCTAssertTrue(controller.receiverStatus.listening)
+        controller.showReceiverPage()
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
+        try button("Edit Audience Design", in: root).performClick(nil)
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
+        XCTAssertNotNil(try button("Back to Audience", in: root))
+        try button("Back to Audience", in: root).performClick(nil)
+        XCTAssertNotNil(try button("Edit Audience Design", in: root))
+        controller.showSettings()
+        let settings = try XCTUnwrap(visibleSettingsContent())
+        XCTAssertFalse(descendants(settings).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
+        sender.disconnect(); second.disconnect()
+        eventually("all senders disconnected") { controller.receiverStatus.connections == 0 }
     }
     func testTurningOffCustomTextStopsSendingAndKeepsDraftPrivateOnReenable() throws {
         let domain = "AltViewTests.DisableCustomText.\(UUID())"
@@ -814,12 +1099,9 @@ final class WindowTests: XCTestCase {
         controller.setCustomTextEnabled(true); controller.showComposerPage()
         let root = try XCTUnwrap(controller.window?.contentView)
         controller.showReceiverPage()
-        let pair = try button("Pair a sender…", in: root)
         controller.showComposerPage()
         try button("Publish Text & Design", in: root).performClick(nil)
         eventually("custom text owns output") { controller.receiverStatus.ownerID != nil }
-        XCTAssertFalse(pair.isHidden)
-        XCTAssertEqual(pair.title, "Pair another sender…")
         let title = try field("Text title", in: root)
         title.stringValue = "Next private title"
         title.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: title))
@@ -832,12 +1114,10 @@ final class WindowTests: XCTestCase {
             controller.receiverStatus.ownerID == nil && controller.receiverStatus.connections == 0
         }
         XCTAssertTrue(controller.receiverStatus.listening)
-        XCTAssertFalse(pair.isHidden)
-        XCTAssertEqual(pair.title, "Pair a sender…")
         XCTAssertEqual(controller.receiverStatus.content, .empty)
-        let navigation = try XCTUnwrap(descendants(root).compactMap { $0 as? NSSegmentedControl }.first)
-        XCTAssertEqual(navigation.segmentCount, 2)
-        XCTAssertEqual(navigation.label(forSegment: navigation.selectedSegment), "Output")
+        let navigation = try sidebar(in: root)
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "Confidence", "Setup", "Connections"])
+        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
         XCTAssertFalse(defaults.bool(forKey: "customTextEnabled"))
         controller.showComposerPage()
         XCTAssertFalse(controller.customTextEnabled, "A stale Text shortcut cannot enable the feature")
@@ -874,17 +1154,17 @@ final class WindowTests: XCTestCase {
         controller.setCustomTextEnabled(true)
         controller.showWindow(nil)
         root.layoutSubtreeIfNeeded()
-        window.setContentSize(NSSize(width: 980, height: 650))
+        window.setContentSize(NSSize(width: 1160, height: 650))
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = NSAppearance(named: appearance)
             for (showPage, action) in [
                 (controller.showComposerPage, "Publish Text & Design"),
-                (controller.showDesignPage, "Apply Design to Output"),
-                (controller.showReceiverPage, "Open Output")
+                (controller.showDesignPage, "Apply Changes"),
+                (controller.showReceiverPage, "Open Display")
             ] {
                 showPage()
                 root.layoutSubtreeIfNeeded()
-                XCTAssertEqual(root.bounds.width, 980, accuracy: 1, "Changing pages must not enlarge the window")
+                XCTAssertEqual(root.bounds.width, 1160, accuracy: 1, "Changing pages must not enlarge the window")
                 XCTAssertEqual(root.bounds.height, 650, accuracy: 1, "Opening \(action) in \(appearance.rawValue) must not enlarge the window")
                 let primary = try button(action, in: root)
                 XCTAssertTrue(root.bounds.contains(primary.convert(primary.bounds, to: root)), action)
@@ -895,10 +1175,10 @@ final class WindowTests: XCTestCase {
                 XCTAssertGreaterThan(frame.width, 300)
                 XCTAssertEqual(frame.width / frame.height, 16.0 / 9, accuracy: 0.01)
                 let statusID = action == "Publish Text & Design" ? "composerPresentationStatus"
-                    : action == "Apply Design to Output" ? "designDraftStatus" : "workspaceContentStatus"
+                    : action == "Apply Changes" ? "designDraftStatus" : "workspaceContentStatus"
                 let status = try XCTUnwrap(descendants(root).first { $0.accessibilityIdentifier() == statusID })
                 XCTAssertTrue(root.bounds.contains(status.convert(status.bounds, to: root)))
-                if action != "Open Output" {
+                if action != "Open Display" {
                     XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "workspaceContentStatus" },
                                    "Receiver status belongs only on Output")
                 }
@@ -926,7 +1206,7 @@ final class WindowTests: XCTestCase {
         let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
         let stage = try XCTUnwrap(canvas.superview)
         let mode = try button("Use lower-third layout", in: root)
-        for size in [NSSize(width: 980, height: 650), NSSize(width: 1280, height: 800), NSSize(width: 1520, height: 900)] {
+        for size in [NSSize(width: 1160, height: 650), NSSize(width: 1280, height: 800), NSSize(width: 1520, height: 900)] {
             window.setContentSize(size)
             root.layoutSubtreeIfNeeded()
             let originalStage = stage.convert(stage.bounds, to: root)
@@ -944,7 +1224,7 @@ final class WindowTests: XCTestCase {
                 XCTAssertEqual(currentCanvas.height, originalCanvas.height, accuracy: 1)
                 XCTAssertEqual(currentCanvas.width / currentCanvas.height, 16.0 / 9, accuracy: 0.01)
                 if size.height >= 800 { XCTAssertGreaterThan(currentCanvas.height, 300, "The preview must use the available height") }
-                let apply = try button("Apply Design to Output", in: root)
+                let apply = try button("Apply Changes", in: root)
                 XCTAssertTrue(root.bounds.contains(apply.convert(apply.bounds, to: root)))
             }
         }
@@ -1223,7 +1503,7 @@ final class WindowTests: XCTestCase {
         try button("Show layout guides", in: root).performClick(nil)
         try button("Preview Animation", in: root).performClick(nil)
         XCTAssertTrue(published.isEmpty, "Preview controls are private")
-        try button("Apply Design to Output", in: root).performClick(nil)
+        try button("Apply Changes", in: root).performClick(nil)
         XCTAssertEqual(published.count, 1)
         XCTAssertEqual(published.first?.artworkRegion.width, 100)
         XCTAssertFalse(controller.hasChanges)
@@ -1233,6 +1513,104 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(controller.template.artworkRegion.width, 100, "Revert restores the last applied design")
         XCTAssertEqual(published.count, 1)
     }
+    func testDesignKeepsSenderTextAcrossProfilesAndRefreshesIncomingChanges() throws {
+        let controller = LowerThirdWindowController()
+        defer { controller.shutdown() }
+        controller.update(library: TemplateDesignLibrary(), artworks: [:], busy: false, message: "")
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let picker = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }
+            .first { $0.accessibilityLabel() == "Design preview content" })
+        let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        let source = DisplayContent(title: "Live reference", body: "Sender's actual text", footer: "Translation", template: .scripture)
+        controller.updateContent(draft: .empty, source: source, externalSource: "ViewTheWord", customTextEnabled: false)
+        for profile in DesignProfileID.allCases {
+            controller.selectProfile(profile)
+            XCTAssertEqual(picker.titleOfSelectedItem, "Current source")
+            XCTAssertEqual(canvas.content.body, source.body)
+        }
+        var next = source; next.body = "Next verse"
+        controller.updateContent(draft: .empty, source: next, externalSource: "ViewTheWord", customTextEnabled: false)
+        XCTAssertEqual(canvas.content.body, "Next verse")
+        picker.selectItem(withTitle: "Sample · Announcement")
+        picker.sendAction(picker.action, to: picker.target)
+        controller.selectProfile(.scripture)
+        XCTAssertEqual(picker.titleOfSelectedItem, "Sample · Scripture", "Explicit sample previews remain available")
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue == "Scripture sample preview · not live"
+        })
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue == "Previewing sample text. Choose Current source to preview text from ViewTheWord."
+        })
+        controller.updateContent(draft: DisplayContent(body: "Private draft"), source: .empty, externalSource: nil)
+        picker.selectItem(withTitle: "Text draft"); picker.sendAction(picker.action, to: picker.target)
+        controller.selectProfile(.custom)
+        XCTAssertEqual(picker.titleOfSelectedItem, "Text draft")
+        XCTAssertEqual(canvas.content.body, "Private draft")
+        XCTAssertFalse(controller.hasChanges)
+    }
+
+    func testDesignSelectorControlsSettingsAndPreviewWithoutChangingAudienceAssignment() throws {
+        let editor = LowerThirdWindowController()
+        defer { editor.shutdown() }
+        var library = TemplateDesignLibrary()
+        library.selection = .scripture
+        library.lyrics.style.fontName = "Georgia"
+        library.scripture.style.fontName = "Helvetica"
+        editor.update(library: library, artworks: [:], busy: false, message: "")
+        XCTAssertEqual(editor.editingProfile, .scripture, "Open the saved audience design initially")
+        let source = DisplayContent(title: "Reference", body: "Actual sender text", footer: "Translation", template: .scripture)
+        editor.updateContent(draft: .empty, source: source, externalSource: "ViewTheWord", customTextEnabled: false)
+        let root = editor.contentView
+        let selector = try editingTemplate(in: root)
+        XCTAssertEqual(selector.accessibilityLabel(), "Design")
+        XCTAssertFalse(descendants(root).compactMap { $0 as? NSPopUpButton }.contains {
+            $0.accessibilityLabel() == "Template" && !$0.isHiddenOrHasHiddenAncestor
+        }, "Audience assignment has no visible control in the design editor")
+        let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        var publications = 0
+        editor.onApplyLibrary = { _, _ in publications += 1 }
+        for profile in DesignProfileID.allCases {
+            selectTemplate(profile, in: selector)
+            XCTAssertEqual(editor.editingProfile, profile)
+            XCTAssertEqual(preview.presentation.template.textTemplate, profile.selection)
+            XCTAssertEqual(preview.style.fontName, library.design(profile).style.fontName)
+            XCTAssertEqual(preview.content.body, source.body)
+            XCTAssertEqual(publications, 0)
+        }
+        // Editing another design is navigation, independent of the audience choice.
+        editor.selectProfile(.lyrics)
+        XCTAssertEqual(editor.draftLibrary?.selection, .scripture)
+        XCTAssertEqual(preview.presentation.template.textTemplate, .lyrics)
+        XCTAssertEqual(publications, 0)
+    }
+
+    func testDesignNumericEditsRefreshPreviewWhileTypingAndRemainPrivate() throws {
+        let controller = LowerThirdWindowController()
+        defer { controller.shutdown() }
+        var baseline = LowerThirdTemplate(); baseline.enabled = true
+        controller.update(template: baseline, style: OutputStyle(), artwork: nil, busy: false, message: "")
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
+        let width = try field("Body Width percent", in: root)
+        var publications = 0
+        controller.onApply = { _, _ in publications += 1 }
+        width.stringValue = "65"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: width))
+        XCTAssertEqual(canvas.presentation.template.bodyRegion.width, 65)
+        XCTAssertTrue(controller.hasChanges)
+        XCTAssertEqual(publications, 0)
+        width.stringValue = "oops"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: width))
+        XCTAssertEqual(canvas.presentation.template.bodyRegion.width, 65, "Invalid input keeps the last valid preview")
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
+        width.stringValue = "72"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: width))
+        XCTAssertEqual(canvas.presentation.template.bodyRegion.width, 72)
+        controller.revertChanges()
+        XCTAssertEqual(canvas.presentation.template.bodyRegion.width, baseline.bodyRegion.width)
+        XCTAssertEqual(publications, 0)
+    }
+
     func testLowerThirdInvalidInputBlocksApplyAndExplainsClamping() throws {
         let controller = LowerThirdWindowController()
         defer { controller.shutdown() }
@@ -1245,7 +1623,7 @@ final class WindowTests: XCTestCase {
         for text in ["oops", "nan", "inf", ""] {
             height.stringValue = text
             controller.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: height))
-            XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+            XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
             controller.applyChanges()
             XCTAssertEqual(published, 0)
             XCTAssertEqual(height.stringValue, text, "Keep invalid input visible so it can be corrected")
@@ -1277,7 +1655,7 @@ final class WindowTests: XCTestCase {
         picker.selectItem(withTitle: "None"); picker.sendAction(picker.action, to: picker.target)
         XCTAssertFalse(duration.isEnabled)
         XCTAssertEqual(duration.stringValue, "0.45")
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         controller.applyChanges()
         XCTAssertFalse(controller.hasChanges)
         XCTAssertEqual(controller.template.animation, .none)
@@ -1305,10 +1683,10 @@ final class WindowTests: XCTestCase {
         controller.update(template: applied, style: OutputStyle(), artwork: nil, busy: false, message: "Saved PNG unavailable")
         let root = try XCTUnwrap(controller.window?.contentView)
         let picker = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Lower third artwork" })
-        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.hasPrefix("PNG unavailable.") })
         picker.selectItem(withTitle: "Built-in banner"); picker.sendAction(picker.action, to: picker.target)
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         var published: LowerThirdTemplate?
         controller.onApply = { value, _ in published = value }
         controller.applyChanges()
@@ -1323,7 +1701,7 @@ final class WindowTests: XCTestCase {
         window.setContentSize(NSSize(width: 900, height: 600))
         let root = try XCTUnwrap(window.contentView)
         root.layoutSubtreeIfNeeded()
-        let apply = try button("Apply Design to Output", in: root)
+        let apply = try button("Apply Changes", in: root)
         let frame = apply.convert(apply.bounds, to: root)
         XCTAssertTrue(root.bounds.contains(frame), "Apply must remain visible while settings scroll")
         XCTAssertFalse(root.hasAmbiguousLayout)
@@ -1359,7 +1737,7 @@ final class WindowTests: XCTestCase {
         XCTAssertFalse(bodyY.isEnabled); XCTAssertFalse(bodyHeight.isEnabled)
         XCTAssertTrue(try field("Body Width percent", in: root).isEnabled)
         XCTAssertNil(applied, "Visibility changes stay private until Apply")
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         controller.applyChanges()
         XCTAssertEqual(applied?.showsTitle, false); XCTAssertEqual(applied?.showsFooter, false)
         XCTAssertEqual(applied?.bodyRegion, LowerThirdTemplate().bodyRegion)
@@ -1505,7 +1883,7 @@ final class WindowTests: XCTestCase {
         let draft = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
         XCTAssertTrue(draft.content.visible)
         XCTAssertEqual(draft.accessibilityLabel(), "Title\nText without artwork\nFooter")
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         controller.setCustomTextEnabled(true); controller.showComposerPage()
         let publish = try button("Publish Text & Design", in: root)
         XCTAssertTrue(publish.isEnabled)
@@ -1521,7 +1899,7 @@ final class WindowTests: XCTestCase {
         XCTAssertFalse(live.presentation.template.showsArtwork)
         controller.showDesignPage()
         try button("Artwork", in: root).performClick(nil)
-        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled, "Showing the missing PNG must require recovery again")
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled, "Showing the missing PNG must require recovery again")
     }
     func testAutomaticBodyPlacementClearsErrorsInCalculatedFields() throws {
         let controller = LowerThirdWindowController()
@@ -1532,11 +1910,11 @@ final class WindowTests: XCTestCase {
         let bodyY = try field("Body Y percent", in: root)
         bodyY.stringValue = "bad"
         controller.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: bodyY))
-        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
         try button("Title", in: root).performClick(nil)
         XCTAssertFalse(bodyY.isEnabled)
         XCTAssertEqual(bodyY.stringValue, "74")
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         controller.applyChanges()
         XCTAssertFalse(controller.hasChanges)
         XCTAssertEqual(controller.template.bodyRegion.y, 79)
@@ -1612,7 +1990,7 @@ final class WindowTests: XCTestCase {
         let stillApplied = try JSONDecoder().decode(OutputStyle.self, from: XCTUnwrap(defaults.data(forKey: "outputStyle")))
         XCTAssertEqual(stillApplied.fontName, "System")
         controller.showDesignPage()
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled, "Hide must release the publishing lock and retain the draft design")
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled, "Hide must release the publishing lock and retain the draft design")
     }
 
     func testExternalSourcePreviewAndDesignApplyPreserveOwnership() throws {
@@ -1644,7 +2022,7 @@ final class WindowTests: XCTestCase {
         try button("Use lower-third layout", in: root).performClick(nil)
         try button("Footer", in: root).performClick(nil)
         XCTAssertEqual(controller.receiverStatus.content, text)
-        try button("Apply Design to Output", in: root).performClick(nil)
+        try button("Apply Changes", in: root).performClick(nil)
         XCTAssertEqual(controller.receiverStatus.ownerID, sender.senderID)
         XCTAssertEqual(controller.receiverStatus.content, text)
         controller.setCustomTextEnabled(true); controller.showComposerPage()
@@ -1685,7 +2063,7 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(controller.receiverStatus.content, .empty)
         XCTAssertNil(defaults.data(forKey: "outputStyle"))
         controller.showDesignPage()
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
         try button("Revert All Changes", in: root).performClick(nil)
         XCTAssertEqual(font.titleOfSelectedItem, "System")
@@ -1699,33 +2077,36 @@ final class WindowTests: XCTestCase {
         library.lyrics.template.assetID = UUID(); library.lyrics.template.assetName = "missing-lyrics.png"
         editor.update(library: library, artworks: [:], busy: false, message: "")
         let root = editor.contentView
-        let policy = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Output template" })
         var saved: TemplateDesignLibrary?
         editor.onApplyLibrary = { value, _ in saved = value }
 
         // A fixed policy must be checked even with no active source.
-        policy.selectItem(withTitle: "Lyrics"); policy.sendAction(policy.action, to: policy.target)
-        XCTAssertEqual(editor.editingProfile, .custom)
-        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        library.selection = .lyrics
+        editor.update(library: library, artworks: [:], busy: false, message: "")
+        editor.selectProfile(.custom)
+        try button("Fit to Canvas", in: root).performClick(nil)
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains {
-            $0.stringValue.contains("Lyrics PNG unavailable") && $0.stringValue.contains("Editing template")
+            $0.stringValue.contains("Lyrics PNG unavailable") && $0.stringValue.contains("Design")
         })
         editor.applyChanges()
         XCTAssertNil(saved)
         XCTAssertTrue(editor.hasChanges, "A failed Apply must preserve the draft and baseline")
         editor.revertChanges()
-        XCTAssertEqual(editor.draftLibrary?.selection, .sender)
+        XCTAssertEqual(editor.draftLibrary?.selection, .lyrics)
+        library.selection = .sender
+        editor.update(library: library, artworks: [:], busy: false, message: "")
 
         // Following the sender must validate the actual source, not the editor sample.
         editor.updateContent(draft: DisplayContent(body: "Local draft"),
                              source: DisplayContent(body: "Song", template: .lyrics), externalSource: "Lyric sender")
         try button("Title", in: root).performClick(nil)
-        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
         editor.applyChanges()
         XCTAssertNil(saved)
         editor.selectProfile(.lyrics)
         try button("Artwork", in: root).performClick(nil)
-        XCTAssertTrue(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertTrue(try button("Apply Changes", in: root).isEnabled)
         editor.applyChanges()
         XCTAssertFalse(try XCTUnwrap(saved).lyrics.template.showsArtwork)
         XCTAssertFalse(editor.hasChanges)
@@ -1793,7 +2174,7 @@ final class WindowTests: XCTestCase {
         let font = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Draft font" })
         font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
         let editor = try XCTUnwrap(try button("Choose PNG…", in: root).target as? LowerThirdWindowController)
-        XCTAssertFalse(try button("Apply Design to Output", in: root).isEnabled)
+        XCTAssertFalse(try button("Apply Changes", in: root).isEnabled)
         controller.showComposerPage()
         let publish = try button("Publish Text & Design", in: root)
         XCTAssertTrue(publish.isEnabled)
@@ -1820,7 +2201,7 @@ final class WindowTests: XCTestCase {
         func picker(_ label: String) throws -> NSPopUpButton {
             try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == label })
         }
-        let profile = try editingTemplate(in: root), policy = try picker("Output template")
+        let profile = try editingTemplate(in: root)
         let font = try picker("Draft font"), alignment = try picker("Lower third text alignment")
         let lineLayout = try picker("Lyrics line layout")
         let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
@@ -1829,7 +2210,7 @@ final class WindowTests: XCTestCase {
         })
         selectTemplate(.lyrics, in: profile)
         XCTAssertFalse(editor.hasChanges, "Selecting a profile is private navigation")
-        XCTAssertEqual(policy.titleOfSelectedItem, "From sending app")
+        XCTAssertEqual(editor.draftLibrary?.selection, .sender)
         XCTAssertEqual(preview.presentation.template.textTemplate, .lyrics)
         font.selectItem(withTitle: "Georgia"); font.sendAction(font.action, to: font.target)
         lineLayout.selectItem(withTitle: "Compact pairs"); lineLayout.sendAction(lineLayout.action, to: lineLayout.target)
@@ -1861,22 +2242,21 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(saved.custom.template.artworkRegion.width, 90)
         XCTAssertEqual(saved.selection, .sender)
         XCTAssertFalse(editor.hasChanges)
-        XCTAssertTrue(scope.stringValue.hasPrefix("Apply saves all template changes"))
+        XCTAssertTrue(scope.stringValue.hasPrefix("Apply saves all design changes"))
         font.selectItem(withTitle: "Helvetica"); font.sendAction(font.action, to: font.target)
         selectTemplate(.scripture, in: profile)
         try button("Reset This Template’s Positions", in: root).performClick(nil)
         let background = try picker("Draft keying background")
         background.selectItem(withTitle: "Green · Chroma key"); background.sendAction(background.action, to: background.target)
-        policy.selectItem(withTitle: "Lyrics"); policy.sendAction(policy.action, to: policy.target)
-        XCTAssertEqual(scope.stringValue, "Apply and Revert cover: Scripture · Lyrics · Shared key colour · Output selection")
+        XCTAssertEqual(scope.stringValue, "Apply and Revert cover: Scripture · Lyrics · Shared key colour")
         try button("Revert All Changes", in: root).performClick(nil)
-        XCTAssertEqual(editor.template.artworkRegion.width, 100)
+        XCTAssertEqual(editor.draftLibrary?.scripture.template.artworkRegion.width, 100)
         XCTAssertEqual(editor.draftLibrary?.background, library.background)
         XCTAssertEqual(editor.draftLibrary?.selection, .sender)
         selectTemplate(.lyrics, in: profile)
         XCTAssertEqual(font.titleOfSelectedItem, "Georgia")
         XCTAssertFalse(editor.hasChanges)
-        XCTAssertTrue(scope.stringValue.hasPrefix("Apply saves all template changes"))
+        XCTAssertTrue(scope.stringValue.hasPrefix("Apply saves all design changes"))
     }
 
     func testTemplateArtworkSurvivesOtherProfileUpdatesRestartAndSenderChanges() throws {
@@ -1982,7 +2362,7 @@ final class WindowTests: XCTestCase {
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         controller.showDesignPage()
         let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
-        window.setContentSize(NSSize(width: 980, height: 650))
+        window.setContentSize(NSSize(width: 1160, height: 650))
         let profiles = try editingTemplate(in: root)
         let samples = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Design preview content" })
         selectTemplate(.lyrics, in: profiles)
@@ -1996,7 +2376,7 @@ final class WindowTests: XCTestCase {
             let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
             XCTAssertEqual(preview.bounds.width / preview.bounds.height, 16.0 / 9, accuracy: 0.01)
             XCTAssertGreaterThan(preview.bounds.width, 400)
-            for control in [profiles as NSView, try button("Apply Design to Output", in: root), try button("Revert All Changes", in: root)] {
+            for control in [profiles as NSView, try button("Apply Changes", in: root), try button("Revert All Changes", in: root)] {
                 XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
             }
             let inspector = try XCTUnwrap(descendants(root).compactMap { $0 as? NSScrollView }.first {
@@ -2017,7 +2397,7 @@ final class WindowTests: XCTestCase {
             }
             let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
             let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
-            attachment.name = "TemplateDesign-980-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
+            attachment.name = "TemplateDesign-1160-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
         }
     }
 

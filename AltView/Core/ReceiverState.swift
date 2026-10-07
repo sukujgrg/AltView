@@ -12,6 +12,7 @@ struct ReceiverState {
     private(set) var lease: UUID?
     private(set) var revision: UInt64 = 0
     private(set) var content = DisplayContent.empty
+    private(set) var confidenceContent = ConfidenceText.empty
     var owner: SenderIdentity? { ownerConnection.flatMap { senders[$0] } }
 
     mutating func register(connection: UUID, senderID: UUID, name: String) -> Bool {
@@ -26,13 +27,21 @@ struct ReceiverState {
         lease = UUID()
         revision = 0
         content = .empty
+        confidenceContent = .empty
         return lease
     }
     @discardableResult
-    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: DisplayContent) -> Bool {
+    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: DisplayContent, supportsConfidence: Bool = false) -> Bool {
         guard ownerConnection == connection, self.lease == lease, revision > self.revision, content.isValid else { return false }
         self.revision = revision
         self.content = content
+        if supportsConfidence, let confidence = content.confidence {
+            confidenceContent = confidence
+        } else {
+            let text = ConfidenceText(title: content.title, body: content.body, footer: content.footer)
+            // Legacy senders: retain the last visible text on Hide; empty snapshots clear.
+            if content.visible || !text.hasText || !confidenceContent.hasText { confidenceContent = text }
+        }
         return true
     }
     @discardableResult
@@ -50,5 +59,6 @@ struct ReceiverState {
         lease = nil
         revision = 0
         content = .empty
+        confidenceContent = .empty
     }
 }

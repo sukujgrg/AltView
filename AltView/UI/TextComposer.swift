@@ -96,7 +96,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     private var connectionProgress: NSProgressIndicator?
     private var localOwnerName: String?
     private var localOutputNotice = ""
-    private var localDisplayStatus = "Output window closed"
+    private var localDisplayStatus = "Audience window closed"
 
     init(defaults: UserDefaults = .standard, localReceiverID: UUID? = nil,
          loadPairing: @escaping (String) throws -> Data? = KeyStore.read,
@@ -185,8 +185,8 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             UI.row(UI.label("MESSAGE PREVIEW", size: 11, color: .secondaryLabelColor, bold: true), NSView(),
                    UI.label("16:9", size: 11, color: .secondaryLabelColor)),
             canvas, previewNote,
-            UI.row(UI.button("Edit Design", target: self, action: #selector(openDesign)),
-                   UI.button("Open Output Controls", target: self, action: #selector(openReceiver)), NSView()), spacing: 12)
+            UI.row(UI.button("Edit Audience Design", target: self, action: #selector(openDesign)),
+                   UI.button("Open Audience Controls", target: self, action: #selector(openReceiver)), NSView()), spacing: 12)
         let sentText = UI.scrolling(UI.column(remoteHeading, remoteBody, remoteFooter, spacing: 14))
         sentText.setAccessibilityLabel("Last text sent")
         remotePreview = UI.column(UI.label("Last text sent", size: 13, bold: true), sentText,
@@ -288,7 +288,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         destinationName.isHidden = !remote
         destinationName.toolTip = destinationName.stringValue
         destinationHint.stringValue = remote ? (connectionNote.isEmpty ? "Text and your template choice are sent. The receiving Mac controls the final design." : connectionNote)
-            : "Publishes your text and Design changes together. Open Output to choose this Mac’s display."
+            : "Publishes your text and Design changes together. Open Audience to choose this Mac’s display."
         showButton.title = session.pending != nil ? "Connecting…" : session.takingOutput ? "Showing…" : (remote && !status.connected ? "Connect & Publish Text…" : session.primaryTitle)
         if !remote {
             showButton.title = session.pending != nil ? "Connecting…" : session.takingOutput ? "Publishing…" : "Publish Text & Design"
@@ -329,7 +329,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         } else if status.ownsOutput {
             statusLabel.stringValue = session.isVisible ? "Published to \(destination)" : "Text hidden on \(destination)"
             statusDetail.stringValue = !session.isVisible ? "Show Last Text restores your last publication. Publish sends your current edits."
-                : !remote ? "\(localDisplayStatus).\(localDisplayStatus == "Output window closed" ? " Open Output Controls to show it on a display." : "")"
+                : !remote ? "\(localDisplayStatus).\(localDisplayStatus == "Audience window closed" ? " Open Audience Controls to show it on a display." : "")"
                 : unpublished ? "Your new edits have not been sent. The receiving Mac still has your last publication."
                 : "Your message matches the last text sent."
         } else if remote && activeConnectionID != nil && !status.connected {

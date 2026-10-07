@@ -10,6 +10,18 @@ enum AltViewProtocol {
     static let connectionTimeout: TimeInterval = 30
     static let connectionAttemptTimeout: TimeInterval = 10
     static let timeout: TimeInterval = 5
+    static let confidenceText = "confidenceTextV1"
+    static let capabilities = [confidenceText]
+}
+
+/// Presentation text has the same owner as audience output, but independent visibility.
+struct ConfidenceText: Codable, Equatable, Sendable {
+    var title = ""
+    var body = ""
+    var footer = ""
+    static let empty = Self()
+    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
 }
 
 enum EmptyRegionBehavior: String, Codable { case collapse, reserve }
@@ -102,6 +114,7 @@ struct DisplayContent: Codable, Equatable {
     var visible = true
     var emptyRegions = EmptyRegionBehavior.collapse
     var template: ContentTemplate?
+    var confidence: ConfidenceText?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -112,12 +125,12 @@ struct DisplayContent: Codable, Equatable {
     static let multilingual = DisplayContent(title: "MULTILINGUAL TEST", body: "സമാധാനം · Peace\nשלום · سلام\nஅமைதி · शांति", footer: "Check font fallback and line spacing")
 
     var isValid: Bool {
-        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true)
+        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true) && (confidence?.isValid ?? true)
     }
 }
 
 extension DisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -128,6 +141,7 @@ extension DisplayContent {
         visible = try values.decode(Bool.self, forKey: .visible)
         emptyRegions = try values.decodeIfPresent(EmptyRegionBehavior.self, forKey: .emptyRegions) ?? .collapse
         template = try values.decodeIfPresent(ContentTemplate.self, forKey: .template)
+        confidence = try values.decodeIfPresent(ConfidenceText.self, forKey: .confidence)
     }
 }
 
@@ -151,6 +165,7 @@ struct WireMessage: Codable, Equatable {
     var outputReadiness: OutputReadiness?
     var templates: [TemplateDescriptor]?
     var templatePolicy: TemplatePolicy?
+    var capabilities: [String]?
 }
 
 enum ProtocolFailure: Error, LocalizedError {
@@ -225,12 +240,12 @@ enum OutputReadiness: String, Codable, Sendable {
 
     var summary: String {
         switch self {
-        case .closed: return "Output window closed"
-        case .ready: return "Output window open"
+        case .closed: return "Audience window closed"
+        case .ready: return "Audience window open"
         case .preview: return "Preview window only"
-        case .displayMissing: return "Output display disconnected"
-        case .minimized: return "Output window minimized"
-        case .unavailable: return "Output unavailable — check artwork in AltView"
+        case .displayMissing: return "Audience display disconnected"
+        case .minimized: return "Audience window minimized"
+        case .unavailable: return "Audience unavailable — check display and artwork in AltView"
         case .asleep: return "Receiver display asleep"
         }
     }

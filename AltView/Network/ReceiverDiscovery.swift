@@ -1,5 +1,21 @@
 import Foundation
 import Network
+import CryptoKit
+import Darwin
+
+/// A public, boot-scoped machine marker, shared by processes on this Mac.
+/// It contains no pairing material and is used only to choose loopback routing.
+enum LocalReceiverMarker {
+    static let current: String? = {
+        var length = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &length, nil, 0) == 0, (1...128).contains(length) else { return nil }
+        var bytes = [CChar](repeating: 0, count: length)
+        guard sysctlbyname("kern.bootsessionuuid", &bytes, &length, nil, 0) == 0 else { return nil }
+        let value = String(cString: bytes)
+        guard !value.isEmpty else { return nil }
+        return SHA256.hash(data: Data("AltView local v1:\(value)".utf8)).map { String(format: "%02x", $0) }.joined()
+    }()
+}
 
 struct DiscoveredReceiver {
     let name: String

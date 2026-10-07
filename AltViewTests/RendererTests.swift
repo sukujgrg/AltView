@@ -111,7 +111,8 @@ final class RendererTests: XCTestCase {
         XCTAssertEqual(fits, 4, "Only the least recently used layout is discarded")
     }
 
-    private func draw(_ canvas: OutputCanvas, size: NSSize) throws {
+    @discardableResult
+    private func draw(_ canvas: OutputCanvas, size: NSSize) throws -> Data {
         canvas.frame.size = size
         let cg = try XCTUnwrap(CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
             bytesPerRow: Int(size.width) * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -120,6 +121,28 @@ final class RendererTests: XCTestCase {
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
         canvas.draw(canvas.bounds)
+        return Data(bytes: try XCTUnwrap(cg.data), count: cg.bytesPerRow * cg.height)
+    }
+
+    func testSwitchingPreviewPresentationInvalidatesEqualRevisionRasterAndAccessibility() throws {
+        let live = CanvasPresentation(), pending = CanvasPresentation()
+        var template = LowerThirdTemplate(); template.enabled = true; template.animation = .none
+        let content = DisplayContent(title: "Heading", body: "Body text", footer: "Credit")
+        live.update(content: content, style: OutputStyle(), template: template, artwork: nil, immediately: true)
+        template.showsTitle = false; template.showsFooter = false
+        pending.update(content: content, style: OutputStyle(), template: template, artwork: nil, immediately: true)
+        XCTAssertEqual(live.revision, pending.revision)
+        let canvas = OutputCanvas(presentation: live)
+        let size = NSSize(width: 384, height: 216)
+        let original = try draw(canvas, size: size)
+        XCTAssertEqual(canvas.accessibilityLabel(), "Heading\nBody text\nCredit")
+        canvas.setPresentation(pending)
+        XCTAssertEqual(canvas.accessibilityLabel(), "Body text")
+        let candidate = try draw(canvas, size: size)
+        XCTAssertNotEqual(candidate, original, "Independent scenes can share a revision number but require different cached images")
+        canvas.setPresentation(live)
+        XCTAssertEqual(try draw(canvas, size: size), original)
+        XCTAssertEqual(canvas.accessibilityLabel(), "Heading\nBody text\nCredit")
     }
 
     func testFullCanvasHiddenLabelsReclaimSpaceEvenWhenEmptyRowsAreReserved() {

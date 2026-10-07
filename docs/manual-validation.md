@@ -1,3 +1,93 @@
+## Named TVs and persistent monitor numbers — 8 October 2026
+
+## Individual sender connections — 8 October 2026
+
+Connections now includes a native scrolling Senders table with one row per session, its name, presenting/idle state and Disconnect. Disconnected senders remain available with Allow Reconnect; receiver-side refusal prevents automatic retries from immediately undoing an operator disconnect. This refusal lasts for the current receiver process and survives Pause/Resume Receiving; it does not revoke saved pairing credentials. Actions use session IDs so a stale row cannot close a replacement session. Disconnecting an idle sender preserves the current source; disconnecting the owner clears Audience and Confidence text without stopping receiving.
+
+Automated regression uses encrypted localhost connections with duplicate sender names, verifies idle/owner disconnection, refusal of reconnect attempts, allowing reconnection, and rejecting stale session actions. Native window checks exercise the actual Disconnect/Allow Reconnect buttons and render the sender list in compact/large light/dark appearances. All 82 selected regressions passed: 49 window, 21 network and 12 confidence tests.
+
+
+## Native sidebar and shared Connections — 8 October 2026
+
+The workspace uses an AppKit source-list sidebar in a split view. Outputs contains Audience and Confidence; Content contains Text only while Custom Text is enabled; Setup contains Connections. Audience Design opens through Edit Audience Design and keeps Audience selected, with Back to Audience returning to the live preview. Connections owns receiver status, sender names, pairing code and receiving controls for both outputs. AltView → Settings… (Command-comma) opens a separate window for general preferences; Command-5 opens Connections.
+
+Validation: all 49 window tests passed, along with 12 confidence tests. The legacy display fixture was updated to assert the sidebar instead of segmented tabs, and the Audience/Confidence/Connections compact light/dark layout checks passed. The Custom Text opt-in, disable/draft preservation and shared-connection navigation tests passed again after Settings focus polish. The workspace minimum is now 1160 × 650 to retain usable content width beside the sidebar.
+
+Manual rehearsal: select every sidebar destination, edit/back out of Audience Design, connect both sending apps through Connections, and confirm switching outputs preserves the connection. Open Settings while editing Design, enable Text, then disable it while its page is open; the sidebar should return to Audience and the draft should remain private. Check keyboard navigation and selected-row readability in light/dark appearances. Earlier entries below describe their historical interfaces.
+
+
+**Name…** saves a monitor label such as Front Left TV or Stage TV against the macOS display UUID. AltView’s own monitor numbers now persist across discovery reordering, other TVs disconnecting and app relaunch; a new identity does not take an absent monitor’s number or name. The same label appears in both role menus, Identify and active/disconnected status. Names can change while output runs without changing its assignment. The dialog exposes the selectable UUID and supports restoring the model name by leaving the field empty.
+
+Seven additional tests cover three identically named TVs with changed runtime IDs and discovery order, relaunch and missing-monitor number reservation, shared names across role changes, naming a live/disconnected monitor, unknown/ambiguous identities, Unicode/name validation and reset, saved labels on Identify overlays, and the real naming sheet’s Save/Cancel behavior. Compact light/dark fixtures include three identical model names with distinct operator names.
+
+All **184 app tests passed** on 8 October, including the 22 monitor regressions. Native compact light/dark renders with saved names were inspected. The 104 offline release checks passed on 7 October; release tooling is unchanged in this revision.
+
+Hardware rehearsal: connect all three TVs, identify and name each, then select Audience and Confidence by those labels. Unplug/replug and relaunch with one TV absent, confirming the other labels/numbers remain stable. Keep the cable-to-port mapping consistent; after changing cables, ports or adapters, use Identify again and reassign explicitly if macOS reports a new identity. These numbers are AltView’s, with no promised mapping to System Settings numbering.
+
+## Audience and Confidence monitor controls — 7 October 2026
+
+The former Output page is **Audience**; its appearance editor is **Audience Design**. Audience and Confidence share numbered monitor menus and **Open Display**, **Close Display**, and **Identify** actions. Settings retain the shared receiver and pairing controls.
+
+Fifteen new monitor tests cover persistent/exclusive reservations with closed windows, independent preview windows, legacy migration, malformed preferences, duplicate names and identities, mirroring, display-number reuse, reconnection by UUID, immediate window closure on disconnect, cancellation of waiting output, locked live assignments, Identify overlay removal, confirmation on the controls screen, stale confirmation/selection checks, and 980 × 650 light/dark layouts with readable navigation labels. Fixtures use synthetic offscreen monitors and fresh defaults.
+
+The full app suite passed all **177 tests**, and both offline release suites passed all **104 checks**. The final 15 monitor tests passed again after checking malformed storage types and refreshing native fixtures. Assigned-monitor controls were inspected in light/dark compact renders; navigation and monitor actions fit without truncation.
+
+Hardware rehearsal:
+
+1. Use extended displays and assign distinct Audience/Confidence monitors. Identify each while closed, then open both. Verify occupied choices are disabled in the other page, even after closing one window. Preview Window should free its previous physical reservation.
+2. Try the monitor containing the controls; verify the confirmation can be cancelled and the Window menu closes each role independently. Close either live output before changing its monitor.
+3. Unplug each assigned display. Its window should close immediately, the selected monitor should remain marked Disconnected, and the output should wait without covering another screen. Close Display must cancel restoration. Reconnect the same monitor and check the frame on the intended output; reassign explicitly if the hardware reports a different identity.
+4. Switch to mirroring and back to extended displays. AltView should close/wait while mirrored, then restore the intended screen. Repeat using the production dock/adapter, including two identically named monitors.
+
+## Confidence output — 7 October 2026
+
+AltView’s independent Confidence output shows the local clock and current presented text. See [the operator workflow](confidence.md) and [the negotiated protocol extensions](protocol.md). The supporting sender changes live in the neighboring eucaly and ViewTheWord repositories.
+
+Completed automated validation on 7 October 2026 (ViewTheWord’s full suite and review checks ran on 6 October):
+
+| Checkout | Result |
+| --- | --- |
+| AltView | 177 app tests and 104 offline release tests passed on 7 October; the 15 monitor tests passed again after the final preference safeguard. |
+| eucaly | 266 app tests and 104 offline release tests passed, including native Settings checks. |
+| ViewTheWord | 145 Swift tests and 8 review regression checks passed on 6 October; its 2 confidence tests passed again on 7 October. |
+
+AltView and eucaly’s local Release archive/export commands passed, as did ViewTheWord’s native Debug Xcode build. AltView’s exported executable contains both Intel and Apple Silicon architectures; eucaly’s contains Apple Silicon.
+
+The real three-process TLS/Bonjour integration check passed, including dynamic loopback port recovery with settings absent. Lyric/Scripture render fixtures and compact Confidence/settings geometry were inspected. Native offscreen rendering does not establish physical input, native glass appearance or HDMI delivery.
+
+Run the documented checks in each checkout:
+
+```sh
+# AltView
+make test
+make build
+python3 scripts/test-confidence-integration.py
+
+# eucaly
+make test
+make build
+
+# ViewTheWord
+swift test --scratch-path build/SwiftPM
+python3 scripts/test-review-regressions.py
+xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Debug -derivedDataPath build/DerivedData build
+```
+
+The cross-repository integration command expects neighboring `eucaly` and `ViewTheWord` checkouts; `--eucaly` and `--viewtheword` accept other paths. It compiles the actual receiver and both actual sender transports, uses isolated fixture identities and TLS keys, and resolves real Bonjour advertisements into loopback connections on the current port. It does not load saved preferences/Keychain data or open projector windows. It covers connect-only privacy, lyric/Scripture takeover, blank/hidden text retention, Stop, changed-port receiver restart, connect-only sender reconnect, and Clear. Fixture processes are cleaned up after the run.
+
+App tests additionally cover legacy capability negotiation, escaped frame limits, stale leases and acknowledgements, late grants after cancellation, primary text/reference/actual translation, independent appearance and visibility, multilingual fitting, rendered lyric/Scripture fixtures, settings geometry, and synthetic display removal/reappearance. Synthetic display tests cannot establish physical HDMI behavior.
+
+Before using this in a service, complete these physical checks:
+
+1. Attach the confidence monitor via USB-C/HDMI as an extended display. Pick distinct audience and confidence displays. Verify both directions of AltView’s assignment conflict warning and inspect the actual video outputs.
+2. Pair both apps using This Mac with AltView on the presentation Mac, then rehearse Bonjour/LAN from a separate Mac. Pause/resume and restart AltView while Settings is closed; the discovered port must refresh. Connecting, focusing, opening tabs, searching and browsing must leave text unchanged.
+3. Publish lyrics, then project Scripture. Verify reference, primary text and actual translation while advancing verses. Repeat with hidden lyric navigation and ViewTheWord’s primary-missing secondary fallback.
+4. Hide/blank the audience while confidence stays readable. Independently hide/show and stop/restart Confidence. Clear/media, sender Stop, text-owner disconnect and Pause Receiving must clear confidence text. Restart AltView and confirm its output windows remain closed until explicitly opened. Reconnect must never replace another text owner without an explicit projection.
+5. Unplug/replug the chosen confidence display, including rapid changes with three displays and fullscreen Spaces. It must wait for that identity and never relocate. Stop while unplugged must cancel restoration. Check screen/system idle sleep during a full rehearsal and after stopping or minimizing output.
+6. Check long English, Malayalam and Hebrew text at the actual viewing distance, including the small-text notice. Check the clock after a timezone or clock-format change and leave the workflow running for a service-length rehearsal. Check keyboard and VoiceOver access to the new controls.
+
+Physical USB-C/HDMI delivery, real display identity across replug, viewing-distance readability and a complete service rehearsal have not been validated by automated checks.
+
 ## Shared layouts and output sleep prevention — 5 October 2026
 
 - `make test` passed all **150 app tests** and **104 offline release regression tests**. Seven added regressions cover shared fitting across drawing/previews/accessibility/status, fitting-input invalidation, bounded cache eviction, retained exit layouts, hidden-preview catch-up, matching Text/Design drafts, and balanced presentation activity tokens.
@@ -8,19 +98,26 @@
 
 Automated validation: all **143 app tests** and **104 offline release regression tests** pass. Coverage includes migration, per-profile persistence and PNG reload, private drafts, output-profile artwork validation and recovery, healthy publication while editing an unavailable profile, alignment preservation during typography edits, reverting imports across profiles, sender-driven artwork changes, empty-Hide exit preservation, glyph-width joining boundaries, multilingual lyrics, measured/rendered/accessibility agreement, and compact workspace geometry in light/dark appearances. Separate eight-line and nine-line stanzas at a 93 pt preferred size now compact after the initial height fit; the final font is larger than the original fitted font, every joined row remains within its width, and both banner and full-canvas layouts fit their available height. Text is never shrunk to force joining. Physical HDMI/ATEM and VoiceOver checks remain below.
 
-- In Design, use the persistent Editing template buttons to give Lyrics and Scripture different PNGs, fonts, line spacing, boxes and animations. Scroll to the bottom and switch templates: the selector must remain visible. The footer must name pending templates, shared key-colour changes and output-selection changes, including drafts in other templates. Switch profiles while dirty: edits must remain private, and Apply/Revert must cover all profiles. Switching Editing template must not alter Output template or the active sender.
+- In Design, use the persistent Design buttons to give Lyrics and Scripture different PNGs, fonts, line spacing, boxes and animations. Scroll to the bottom and switch templates: the selector must remain visible. The footer must name pending templates, shared key-colour changes and design changes, including drafts in other templates. Switch profiles while dirty: edits must remain private, and Apply/Revert must cover all profiles. Switching Design must update the private preview and settings without changing Audience → Template or the active sender.
 - Set Custom lower-third alignment to Right, then change its font and size. Alignment must stay Right; repeat in full-canvas mode with Left alignment. Confirm the key-colour control is labelled as shared across all templates.
-- With an unavailable Lyrics PNG, keep Editing template on Custom and force Lyrics under Output template. Apply must stay disabled and explain how to repair Lyrics; the current output stays unchanged. Repeat while following a Lyrics source, then recover by replacing its PNG, selecting Built-in banner, or hiding Artwork. Leave the unavailable Lyrics profile open and publish healthy Custom text: publication and its staged designs must still succeed.
+- With an unavailable Lyrics PNG, keep Design on Custom and choose Lyrics under Audience → Template. Apply Template must stay disabled and explain how to repair Lyrics; the current output stays unchanged. Repeat while following a Lyrics source, then recover by replacing its PNG, selecting Built-in banner, or hiding Artwork. Leave the unavailable Lyrics profile open and publish healthy Custom text: publication and its staged designs must still succeed.
 - Apply, move/delete the original PNG files and restart. Each profile must reload its artwork. Replacing Lyrics artwork must retain any PNG still referenced by Custom or Scripture. Revert imports in several profiles and check that only unused draft copies are removed.
 - Keep From sending app and alternate scripture/lyrics snapshots, including hidden/restored messages. Verify matching artwork and typography on the HDMI feed, with sender text and ownership unchanged. Force each output template and check older/unmarked snapshots use that saved design.
 - In Lyrics, turn on Compact pairs with Space and Apply. Send one stanza at a time. Try four short lines, an eight-line stanza with long lines and a large preferred font, odd line counts, blank stanza breaks, punctuation, Malayalam/Hebrew and manual indentation. Only fitting adjacent pairs should join at the actual displayed size; joining should retain or increase that size. Test Comma and Middle dot; Preserve lines must restore the original breaks.
 - Resize Design/Output previews: pairing must stay identical. On a Mac HDMI display set to 1920 × 1080 with a refresh rate matching the ATEM Mini Pro standard, inspect text edges, safe margins, two-row readability, key colour and animation. Check the small-text warning with long content.
-- At 980 × 650 in light/dark appearances, ensure the inspector scrolls while the Editing template selector, 16:9 preview, pending-change summary, Apply and Revert remain visible. Verify Choose PNG and both Fit buttons are grouped in Artwork, and Reset This Template’s Positions sits beside the Layout grid. Check Editing template, line-layout/joiner controls and line-spacing controls with keyboard navigation and VoiceOver.
+- At 980 × 650 in light/dark appearances, ensure the inspector scrolls while the Design selector, 16:9 preview, pending-change summary, Apply and Revert remain visible. Verify Choose PNG and both Fit buttons are grouped in Artwork, and Reset This Template’s Positions sits beside the Layout grid. Check Design, line-layout/joiner controls and line-spacing controls with keyboard navigation and VoiceOver.
+
+## Audience template assignment and design editing — 8 October 2026
+
+- On Audience, choose From sending app, Custom layout, Scripture, or Lyrics under Template. The Audience preview must update immediately using current sender text and show Not applied. The audience display and sender capabilities must stay unchanged until Apply Template. Incoming sender text must continue updating both the pending preview and live picture. Returning to the applied template restores the live preview. Pending design drafts must not be applied or discarded by that action.
+- Open Audience Design while a sender is active: Design must select the design currently used by the audience. The status line must identify that design and sender. Choose another Design and check that settings and preview change immediately while sender text stays intact. Apply Changes saves design edits without changing audience assignment.
+- Choose an explicit sample, visit another page, and return: the sample selection must stay intact. Revert All Changes affects saved-design drafts and the shared key colour; it must not undo template assignment on Audience.
+- Choose a template with unavailable saved PNG artwork on Audience: Apply Template stays disabled. Repair its design by replacing the PNG, using the built-in banner, or hiding Artwork; return to Audience and apply the pending assignment.
 
 ## Template button grouping — 4 October 2026
 
-- Editing template now uses persistent Custom / Scripture / Lyrics buttons above the scrolling inspector. Output template has its own group. Choose PNG and the artwork Fit buttons share the Artwork card; Reset This Template’s Positions sits with the Layout grid.
-- Revert All Changes explicitly restores the whole design library. The footer lists every pending template plus shared key colour and output selection, including drafts retained while another template is open.
+- Design now uses persistent Custom / Scripture / Lyrics buttons above the scrolling inspector. Template assignment is on Audience, with its own Apply Template button. Opening Audience Design selects the current audience design and shows its usage status. Choose PNG and the artwork Fit buttons share the Artwork card; Reset This Template’s Positions sits with the Layout grid.
+- Revert All Changes explicitly restores the whole design library. The footer lists every pending design plus shared key colour, including drafts retained while another template is open.
 - All **81 focused app tests passed** in `build/TemplateGroupingFinal.xcresult` (WindowTests, TemplateDesignTests and LowerThirdTests). The existing draft test now checks hidden-profile summaries and reverting shared settings. Compact layout coverage checks that template navigation and the change summary remain visible after scrolling in both appearances. Footer spacing was tightened to retain the existing preview-size requirement at 980 × 650.
 - An isolated native preview verified artwork grouping, reset placement, switching templates while scrolled, multi-template pending summaries and Revert All Changes in light/dark appearances. The preview used synthetic data and separate preferences.
 
@@ -68,7 +165,7 @@ Validation completed:
 
 Still manual: two-Mac network behavior, real HDMI attach/detach, real display sleep/wake and minimization, and downstream switcher/projector output. A closed or unavailable output can still accept a snapshot; verify that both facts appear in the sending app's status details.
 
-This checklist intentionally uses only AltView. ViewTheWord and eucaly integrations are a separate step.
+Earlier AltView-only checks below remain useful for audience output; the shared three-app workflow is covered above.
 
 ## Connected pairing feedback and spacing — 2 October 2026
 

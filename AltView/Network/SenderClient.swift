@@ -13,6 +13,7 @@ struct SenderStatus: Equatable {
     var feedback = DeliveryFeedback()
     var templateCapabilities = TemplateCapabilities()
     var requestedTemplate: ContentTemplate?
+    var capabilities: Set<String> = []
     var templateDetail: String { templateCapabilities.detail(requested: requestedTemplate) }
 }
 
@@ -120,6 +121,7 @@ final class SenderClient {
         status.connected = false; status.ownsOutput = false
         status.feedback = DeliveryFeedback()
         status.templateCapabilities = TemplateCapabilities()
+        status.capabilities = []
         timer?.cancel(); timer = nil
     }
     private func openConnection() {
@@ -146,7 +148,7 @@ final class SenderClient {
         AltViewLog.sender.notice("connection_attempt connection=\(self.status.connectionID?.uuidString ?? "none", privacy: .public) peer=\(peer.id.uuidString, privacy: .public) attempt=\(self.attempts + 1) restoring=\(self.shouldRestoreOwnership)")
         peer.onReady = { [weak self, weak peer] in
             guard let self, let peer, self.peer === peer else { return }
-            peer.send(WireMessage(kind: .hello, senderID: self.senderID, name: self.name))
+            peer.send(WireMessage(kind: .hello, senderID: self.senderID, name: self.name, capabilities: AltViewProtocol.capabilities))
             // The application handshake starts after the transport is ready.
             self.queue.asyncAfter(deadline: .now() + AltViewProtocol.timeout) { [weak self, weak peer] in
                 guard let self, let peer, self.peer === peer, !self.status.connected else { return }
@@ -209,6 +211,7 @@ final class SenderClient {
             status.feedback = DeliveryFeedback()
             peer?.markHandshakeComplete()
             status.templateCapabilities = capabilities
+            status.capabilities = Set(message.capabilities ?? []).intersection(AltViewProtocol.capabilities)
             status.requestedTemplate = latest.template
             expectedReceiverID = receiverID
             initialConnectionDeadline = nil
@@ -272,11 +275,16 @@ final class SenderClient {
             return
         }
         guard revision < UInt64.max else { peer?.close("Session revision exhausted."); return }
+        var content = status.templateCapabilities.contentForSending(latest)
+        if !status.capabilities.contains(AltViewProtocol.confidenceText) { content.confidence = nil }
+        if (try? FrameCodec.encode(WireMessage(kind: .state, lease: lease, revision: UInt64.max, content: content))) == nil {
+            content = .empty; latest = .empty
+            status.message = "Text exceeds AltView’s frame limit; output cleared"
+        }
         revision += 1
         status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
         AltViewLog.sender.info("snapshot_queued peer=\(self.peer?.id.uuidString ?? "none", privacy: .public) lease=\(lease.uuidString, privacy: .public) revision=\(self.revision) visible=\(self.latest.visible)")
-        peer?.send(WireMessage(kind: .state, lease: lease, revision: revision,
-                              content: status.templateCapabilities.contentForSending(latest)))
+        peer?.send(WireMessage(kind: .state, lease: lease, revision: revision, content: content))
         publish()
     }
     private func scheduleReconnect() {

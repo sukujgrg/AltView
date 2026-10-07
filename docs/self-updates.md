@@ -21,7 +21,7 @@ Sparkle-enabled version. Later versions update inside AltView.
   including at launch. Click the reminder when ready to update.
 - An open output window (including preview or waiting for a disconnected display),
   an active receiver source, or Custom Text publication blocks manual checks and
-  update relaunch. Close Output and stop presenting/release the source first.
+  update relaunch. Close Audience Display and stop presenting/release the source first.
   A check or dialog opened before presentation begins is guarded again before
   offering an update and before restarting.
 - Automatic installation is disabled. Installation requires user action. Normal

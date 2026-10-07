@@ -18,7 +18,7 @@ protocol AppUpdateDriving: AnyObject {
 /// One updater shared by the app menu and workspace. Installation is explicit.
 @MainActor
 final class AppUpdateController: NSObject, NSMenuItemValidation {
-    static let activityExplanation = "Close Output and stop presenting text before updating AltView."
+    static let activityExplanation = "Close Audience Display and stop presenting text before updating AltView."
     private(set) var state: AppUpdateState
     var onChange: (() -> Void)?
     private let driver: any AppUpdateDriving

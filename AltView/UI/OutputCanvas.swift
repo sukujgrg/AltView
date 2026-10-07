@@ -168,7 +168,7 @@ extension CanvasTextLayout {
 }
 
 final class OutputCanvas: NSView {
-    let presentation: CanvasPresentation
+    private(set) var presentation: CanvasPresentation
     private var observation: UUID?
     private var cachedRevision: UInt64?
     private var cachedImage: NSImage?
@@ -202,6 +202,14 @@ final class OutputCanvas: NSView {
         observePresentation()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func setPresentation(_ presentation: CanvasPresentation) {
+        guard self.presentation !== presentation else { return }
+        if let observation { self.presentation.removeObserver(observation) }
+        self.presentation = presentation
+        cachedRevision = nil; cachedImage = nil
+        accessibilitySource = nil; accessibilityRevision = nil
+        observePresentation()
+    }
     private func observePresentation() {
         setAccessibilityElement(true); setAccessibilityRole(.image)
         observation = presentation.observe { [weak self] in self?.presentationDidChange() }

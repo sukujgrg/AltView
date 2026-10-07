@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showDesign() { receiver?.showDesignPage() }
     @objc private func showComposer() { receiver?.showComposerPage() }
     @objc private func showSettings() { receiver?.showSettings() }
+    @objc private func showConnections() { receiver?.showConnectionsPage() }
+    @objc private func showConfidence() { receiver?.showConfidencePage() }
+    @objc private func closeConfidence() { receiver?.closeConfidence() }
     @objc private func closeOutput() { receiver?.closeOutput() }
     private func updateCustomTextMenu() {
         let enabled = receiver?.customTextEnabled == true
@@ -68,8 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let viewItem = NSMenuItem(); menu.addItem(viewItem)
         let view = NSMenu(title: "View"); viewItem.submenu = view
-        let output = view.addItem(withTitle: "Show Output", action: #selector(showReceiver), keyEquivalent: "3"); output.target = self
-        let design = view.addItem(withTitle: "Show Design", action: #selector(showDesign), keyEquivalent: "2"); design.target = self
+        let output = view.addItem(withTitle: "Show Audience", action: #selector(showReceiver), keyEquivalent: "3"); output.target = self
+        let design = view.addItem(withTitle: "Show Audience Design", action: #selector(showDesign), keyEquivalent: "2"); design.target = self
+        let confidence = view.addItem(withTitle: "Show Confidence", action: #selector(showConfidence), keyEquivalent: "4"); confidence.target = self
+        let connections = view.addItem(withTitle: "Show Connections", action: #selector(showConnections), keyEquivalent: "5"); connections.target = self
         customTextMenuItem = view.addItem(withTitle: "Show Text", action: #selector(showComposer), keyEquivalent: "1")
         customTextMenuItem?.target = self
         updateCustomTextMenu()
@@ -78,8 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windows.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windows.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windows.addItem(.separator())
-        let close = windows.addItem(withTitle: "Close Output", action: #selector(closeOutput), keyEquivalent: "o")
+        let close = windows.addItem(withTitle: "Close Audience Display", action: #selector(closeOutput), keyEquivalent: "o")
         close.keyEquivalentModifierMask = [.command, .shift]; close.target = self
+        let stopConfidence = windows.addItem(withTitle: "Close Confidence Display", action: #selector(closeConfidence), keyEquivalent: "o")
+        stopConfidence.keyEquivalentModifierMask = [.command, .option, .shift]; stopConfidence.target = self
         NSApp.windowsMenu = windows
         NSApp.mainMenu = menu
     }
