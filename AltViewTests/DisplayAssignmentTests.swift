@@ -297,7 +297,7 @@ final class DisplayAssignmentTests: XCTestCase {
         XCTAssertTrue(labels.rename(c.target, to: "Front Right TV"))
         let window = MonitorLayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
                                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(),
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false,
                                                   window: window, displays: { [a, b, c] })
         defer { controller.shutdown(); controller.close() }
         controller.showWindow(nil); window.setContentSize(NSSize(width: 1160, height: 650))

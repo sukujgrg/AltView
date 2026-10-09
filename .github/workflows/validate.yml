@@ -22,7 +22,8 @@ jobs:
       - name: App and release regressions
         env:
           # Hosted runners do not reliably support local multicast discovery.
-          # Identity filtering and real loopback TLS tests still run here.
+          # Window receivers do not advertise; identity filtering and real
+          # loopback TLS tests still run here.
           TEST_RUNNER_ALTVIEW_SKIP_BONJOUR_TEST: "1"
         run: make test
       - name: Project generator stays in sync

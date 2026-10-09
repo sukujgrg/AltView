@@ -356,7 +356,7 @@ final class ConfidenceTests: XCTestCase {
         let display = OutputDisplay(id: 101, name: "Stage monitor", frame: NSRect(x: -8000, y: 0, width: 960, height: 540), identity: "stage")
         defaults.set(101, forKey: "outputDisplayID")
         defaults.set(101, forKey: "confidenceDisplayID")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), displays: { [display] })
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, displays: { [display] })
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: suite) }
         let root = try XCTUnwrap(controller.window?.contentView)
         func views(_ parent: NSView) -> [NSView] { parent.subviews.flatMap { [$0] + views($0) } }
@@ -406,7 +406,7 @@ final class ConfidenceTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let window = ConfidenceLayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
                                                styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), window: window)
+        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, window: window)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: suite) }
         controller.showConfidencePage(); controller.showWindow(nil)
         window.setContentSize(NSSize(width: 1160, height: 650))

@@ -140,5 +140,7 @@ and tall layouts are checked at their requested dimensions. Hosted CI explicitly
 sets `TEST_RUNNER_ALTVIEW_SKIP_BONJOUR_TEST=1` (forwarded by Xcode as
 `ALTVIEW_SKIP_BONJOUR_TEST`) to skip only the live multicast discovery tests;
 receiver identity parsing/filtering and real loopback TLS tests still run.
+Window regressions disable Bonjour advertising explicitly and continue to use
+real loopback TLS, including when receivers pause, resume or recover their port.
 `make test` locally includes live Bonjour discovery by default and needs local
 network access. Two-Mac discovery remains part of the manual hardware checks.

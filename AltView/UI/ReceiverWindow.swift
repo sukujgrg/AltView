@@ -21,6 +21,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }
     @objc private func checkForUpdates() { onCheckForUpdates?() }
     var onCustomTextSettingChange: (() -> Void)?
+    private let advertiseReceiver: Bool
     private let receiverPort: UInt16
     private var stopped = false
     private(set) var pairingKey: Data?
@@ -102,11 +103,13 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let contentBadge = StatusBadge("NO TEXT")
     private var updatingDraft = false
 
-    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil, receiverPort: UInt16 = 0,
+    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil,
+         advertiseReceiver: Bool = true, receiverPort: UInt16 = 0,
          window: NSWindow? = nil, artworkStore: PNGArtworkStore = PNGArtworkStore(),
          displays: @escaping () -> [OutputDisplay] = { OutputDisplay.current },
          presentation: CanvasPresentation = CanvasPresentation()) {
         self.defaults = defaults; self.receiverPort = receiverPort
+        self.advertiseReceiver = advertiseReceiver
         monitorAssignments = DisplayAssignments(defaults: defaults, displays: displays)
         self.artworkStore = artworkStore; self.presentation = presentation
         templatePreviewPresentation = CanvasPresentation(layoutCache: presentation.layoutCache)
@@ -529,7 +532,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         defaults.set(name, forKey: "receiverName")
         receiveButton.isEnabled = false
         statusLabel.stringValue = "Starting receiver…"
-        server.start(name: name, key: key, port: receiverPort)
+        server.start(name: name, key: key, port: receiverPort, advertise: advertiseReceiver)
     }
     @objc private func copyPairingCode() {
         guard let pairingKey else { return }
