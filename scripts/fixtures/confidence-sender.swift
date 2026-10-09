@@ -49,12 +49,13 @@ enum ConfidenceSenderHarness {
                 switch command {
                 case "publish", "next":
                     intent = UUID()
-                    let text = command == "next" ? "Next primary lyric" : role == "eucaly" ? "Primary lyric" : "Primary verse"
+                    let text = command == "next" ? (role == "eucaly" ? "Next primary lyric" : "Next primary verse") : role == "eucaly" ? "Primary lyric" : "Primary verse"
                     latest = AltViewDisplayContent(title: role == "eucaly" ? "Song" : "John 3:16", body: text,
                         footer: role == "eucaly" ? "" : "Primary translation", confidence: .init(title: role == "eucaly" ? "Song" : "John 3:16", body: text, footer: role == "eucaly" ? "" : "Primary translation"))
                     #if EUCALY
                     client.submit(latest!, submissionID: UUID()); client.takeOutput()
                     #else
+                    latest?.confidence?.secondary = .init(body: "Secondary verse", footer: "Secondary translation")
                     client.submit(AltViewSubmission(connectionID: connectionID, content: latest, intent: intent))
                     #endif
                 case "hide", "hidden-navigation":
@@ -65,6 +66,20 @@ enum ConfidenceSenderHarness {
                     #else
                     client.submit(AltViewSubmission(connectionID: connectionID, content: latest, intent: intent))
                     #endif
+                #if EUCALY
+                case "media", "recreated", "reclaim-media":
+                    let report = AltViewProjectionPresentation(sessionID: receiverID, mode: .media,
+                        windowID: command == "recreated" ? 88 : 77, windowGeneration: UUID())
+                    latest = AltViewDisplayContent(visible: false, projection: report)
+                    client.submit(latest!, submissionID: UUID()); client.takeOutput()
+                case "clear":
+                    latest = .empty
+                    client.submit(.empty, submissionID: UUID())
+                #else
+                case "primary-only":
+                    latest?.confidence?.secondary = nil
+                    client.submit(AltViewSubmission(connectionID: connectionID, content: latest, intent: intent))
+                #endif
                 case "stop":
                     latest = nil; intent = nil
                     #if EUCALY

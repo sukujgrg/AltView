@@ -6,6 +6,9 @@ struct SenderStatus: Equatable {
     var connectionID: UUID?
     var connected = false
     var ownsOutput = false
+    // Keep the last grant in subsequent snapshots: UI delivery may coalesce
+    // a grant and a takeover into a single non-owner status.
+    var lastGrantedLease: UUID?
     var receiverID: UUID?
     var ownerName: String?
     var message = "Not connected"
@@ -46,10 +49,20 @@ final class SenderClient {
     }
 
     init(name: String, senderID: UUID = UUID(), callbackQueue: DispatchQueue = .main, onStatus: @escaping (SenderStatus) -> Void) {
-        self.name = name; self.senderID = senderID
+        self.name = Self.validName(name); self.senderID = senderID
         delivery = SnapshotMailbox(queue: callbackQueue, consume: onStatus)
         // Initialize on the creating thread before concurrent calls can arrive.
         _ = submissions
+    }
+    private static func validName(_ name: String) -> String {
+        var result = "", bytes = 0
+        for character in name.trimmingCharacters(in: .whitespacesAndNewlines) {
+            let part = String(character)
+            guard bytes + part.utf8.count <= AltViewProtocol.maximumSenderNameBytes else { break }
+            result += part; bytes += part.utf8.count
+        }
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.isEmpty ? "AltView" : result
     }
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID? = nil, connectionID: UUID = UUID()) {
         queue.async { [weak self] in
@@ -225,6 +238,7 @@ final class SenderClient {
         case .granted:
             guard status.connected, let lease = message.lease else { return }
             self.lease = lease; revision = 0
+            status.lastGrantedLease = lease
             status.feedback.resetSnapshot()
             status.ownsOutput = true; shouldRestoreOwnership = true
             AltViewLog.sender.notice("ownership_granted peer=\(self.peer?.id.uuidString ?? "none", privacy: .public) lease=\(lease.uuidString, privacy: .public)")
@@ -276,7 +290,7 @@ final class SenderClient {
         }
         guard revision < UInt64.max else { peer?.close("Session revision exhausted."); return }
         var content = status.templateCapabilities.contentForSending(latest)
-        if !status.capabilities.contains(AltViewProtocol.confidenceText) { content.confidence = nil }
+        if !status.capabilities.contains(AltViewProtocol.localProjection) { content.projection = nil }
         if (try? FrameCodec.encode(WireMessage(kind: .state, lease: lease, revision: UInt64.max, content: content))) == nil {
             content = .empty; latest = .empty
             status.message = "Text exceeds AltView’s frame limit; output cleared"

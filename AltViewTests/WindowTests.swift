@@ -1934,6 +1934,25 @@ final class WindowTests: XCTestCase {
         controller.shutdown()
         window.close()
     }
+    func testCoalescedComposerTakeoverReleasesLocalDesignPublicationLock() throws {
+        let domain = "AltViewTests.CoalescedComposer.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        try defaults.set(JSONEncoder().encode(DisplayContent.scripture), forKey: "customTextDraft")
+        let controller = TextComposerViewController(defaults: defaults) { _ in XCTFail("Already connected") }
+        defer { controller.shutdown() }
+        let root = controller.view
+        var locked = false, cancellations = 0
+        controller.prepareLocalPublish = { _ in locked = true; return true }
+        controller.cancelLocalPublish = { locked = false; cancellations += 1 }
+        controller.receive(SenderStatus(connected: true))
+        try button("Publish Text & Design", in: root).performClick(nil)
+        XCTAssertTrue(locked); XCTAssertTrue(controller.isPresenting)
+        controller.receive(SenderStatus(connected: true, lastGrantedLease: UUID(), ownerName: "Another presenter"))
+        XCTAssertFalse(locked); XCTAssertEqual(cancellations, 1)
+        XCTAssertFalse(controller.isPresenting)
+        XCTAssertTrue(try button("Publish Text & Design", in: root).isEnabled)
+    }
     func testWorkspaceDraftPreviewAndAtomicLocalPublication() throws {
         let domain = "AltViewTests.Workspace.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))

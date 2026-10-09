@@ -1,17 +1,27 @@
 import Foundation
+import Darwin
 
 enum AltViewProtocol {
     static let version = 2
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
+    static let maximumSenderNameBytes = 128
     static let heartbeatInterval: TimeInterval = 1
     // Initial setup may need Bonjour resolution and macOS Local Network consent.
     static let connectionTimeout: TimeInterval = 30
     static let connectionAttemptTimeout: TimeInterval = 10
     static let timeout: TimeInterval = 5
     static let confidenceText = "confidenceTextV1"
-    static let capabilities = [confidenceText]
+    static let localProjection = "localProjectionV1"
+    static let capabilities = [confidenceText, localProjection]
+}
+
+struct ConfidenceTranslation: Codable, Equatable, Sendable {
+    var body = ""
+    var footer = ""
+    var hasText: Bool { !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var isValid: Bool { body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
 }
 
 /// Presentation text has the same owner as audience output, but independent visibility.
@@ -19,9 +29,53 @@ struct ConfidenceText: Codable, Equatable, Sendable {
     var title = ""
     var body = ""
     var footer = ""
+    var secondary: ConfidenceTranslation?
     static let empty = Self()
-    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
-    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
+    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } || secondary?.hasText == true }
+    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (secondary?.isValid ?? true) }
+}
+
+/// Same-boot process identity. Public metadata, never a pairing credential.
+struct LocalProjectionProcess: Codable, Equatable, Sendable {
+    let processID: Int32
+    let startTime: UInt64
+    let bootMarker: String
+    var isValid: Bool { processID > 0 && startTime > 0 && bootMarker.utf8.count == 64 }
+    static func startTime(for pid: Int32) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+    static var current: Self? {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        guard let marker = LocalReceiverMarker.current, let start = startTime(for: pid) else { return nil }
+        return Self(processID: pid, startTime: start, bootMarker: marker)
+    }
+    var isLiveLocalProcess: Bool {
+        isValid && bootMarker == LocalReceiverMarker.current && Self.startTime(for: processID) == startTime
+    }
+}
+
+/// Complete last explicit presentation, independent of hidden Current navigation.
+struct ProjectionPresentation: Codable, Equatable, Sendable {
+    enum Mode: String, Codable, Sendable { case lyrics, media }
+    var sessionID: UUID
+    var mode: Mode
+    var windowID: UInt32?
+    var windowGeneration: UUID?
+    var isValid: Bool {
+        (windowID == nil && windowGeneration == nil) || (windowID.map { $0 > 0 } == true && windowGeneration != nil)
+    }
+}
+
+/// Acceptance identity is carried through async capture setup and frame commits.
+struct ConfidenceMediaRequest: Equatable {
+    let connection: UUID
+    let lease: UUID
+    let revision: UInt64
+    let presentation: ProjectionPresentation
+    let process: LocalProjectionProcess?
 }
 
 enum EmptyRegionBehavior: String, Codable { case collapse, reserve }
@@ -115,6 +169,7 @@ struct DisplayContent: Codable, Equatable {
     var emptyRegions = EmptyRegionBehavior.collapse
     var template: ContentTemplate?
     var confidence: ConfidenceText?
+    var projection: ProjectionPresentation?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -125,12 +180,12 @@ struct DisplayContent: Codable, Equatable {
     static let multilingual = DisplayContent(title: "MULTILINGUAL TEST", body: "സമാധാനം · Peace\nשלום · سلام\nஅமைதி · शांति", footer: "Check font fallback and line spacing")
 
     var isValid: Bool {
-        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true) && (confidence?.isValid ?? true)
+        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true) && (confidence?.isValid ?? true) && (projection?.isValid ?? true)
     }
 }
 
 extension DisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template, confidence, projection }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -142,6 +197,7 @@ extension DisplayContent {
         emptyRegions = try values.decodeIfPresent(EmptyRegionBehavior.self, forKey: .emptyRegions) ?? .collapse
         template = try values.decodeIfPresent(ContentTemplate.self, forKey: .template)
         confidence = try values.decodeIfPresent(ConfidenceText.self, forKey: .confidence)
+        projection = try values.decodeIfPresent(ProjectionPresentation.self, forKey: .projection)
     }
 }
 
@@ -166,6 +222,7 @@ struct WireMessage: Codable, Equatable {
     var templates: [TemplateDescriptor]?
     var templatePolicy: TemplatePolicy?
     var capabilities: [String]?
+    var localProcess: LocalProjectionProcess?
 }
 
 enum ProtocolFailure: Error, LocalizedError {

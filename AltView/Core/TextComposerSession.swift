@@ -47,8 +47,9 @@ final class TextComposerSession {
         pending = content; onChange?(); return true
     }
     func receive(_ status: SenderStatus) {
+        let receivedGrant = status.lastGrantedLease != nil && status.lastGrantedLease != self.status.lastGrantedLease
         self.status = status
-        if status.ownsOutput || !status.connected { takingOutput = false }
+        if receivedGrant || status.ownsOutput || !status.connected { takingOutput = false }
         if status.connected, let pending {
             self.pending = nil
             publish(pending)

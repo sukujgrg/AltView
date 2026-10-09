@@ -467,6 +467,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             templateEditor?.selectProfile(designs.profileID(for: outputDesignContent), preservingPreviewContent: true)
         }
         pages.selectTabViewItem(at: index)
+        confidence.setPreviewActive(identifier == "confidence")
         syncSidebarSelection()
         refreshDraft()
         window?.contentView?.layoutSubtreeIfNeeded()

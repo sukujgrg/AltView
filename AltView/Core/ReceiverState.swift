@@ -13,11 +13,12 @@ struct ReceiverState {
     private(set) var revision: UInt64 = 0
     private(set) var content = DisplayContent.empty
     private(set) var confidenceContent = ConfidenceText.empty
+    private(set) var confidenceMedia: ConfidenceMediaRequest?
     var owner: SenderIdentity? { ownerConnection.flatMap { senders[$0] } }
 
     mutating func register(connection: UUID, senderID: UUID, name: String) -> Bool {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard senders[connection] == nil, !name.isEmpty, name.utf8.count <= 128 else { return false }
+        guard senders[connection] == nil, !name.isEmpty, name.utf8.count <= AltViewProtocol.maximumSenderNameBytes else { return false }
         senders[connection] = SenderIdentity(id: senderID, name: name)
         return true
     }
@@ -28,20 +29,24 @@ struct ReceiverState {
         revision = 0
         content = .empty
         confidenceContent = .empty
+        confidenceMedia = nil
         return lease
     }
     @discardableResult
-    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: DisplayContent, supportsConfidence: Bool = false) -> Bool {
+    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: DisplayContent, supportsProjection: Bool = false, localProcess: LocalProjectionProcess? = nil) -> Bool {
         guard ownerConnection == connection, self.lease == lease, revision > self.revision, content.isValid else { return false }
         self.revision = revision
         self.content = content
-        if supportsConfidence, let confidence = content.confidence {
-            confidenceContent = confidence
-        } else {
-            let text = ConfidenceText(title: content.title, body: content.body, footer: content.footer)
-            // Legacy senders: retain the last visible text on Hide; empty snapshots clear.
-            if content.visible || !text.hasText || !confidenceContent.hasText { confidenceContent = text }
+        if supportsProjection, let projection = content.projection, projection.mode == .media {
+            confidenceMedia = ConfidenceMediaRequest(connection: connection, lease: lease, revision: revision,
+                                                     presentation: projection, process: localProcess)
+            confidenceContent = .empty
+            return true
         }
+        confidenceMedia = nil
+        // Custom text shares its Audience fields; presenters provide an explicit
+        // Confidence snapshot to retain their committed text through hidden navigation.
+        confidenceContent = content.confidence ?? ConfidenceText(title: content.title, body: content.body, footer: content.footer)
         return true
     }
     @discardableResult
@@ -60,5 +65,6 @@ struct ReceiverState {
         revision = 0
         content = .empty
         confidenceContent = .empty
+        confidenceMedia = nil
     }
 }

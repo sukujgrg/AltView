@@ -2,6 +2,23 @@ import XCTest
 @testable import AltView
 
 final class TextComposerTests: XCTestCase {
+    func testCoalescedGrantAndTakeoverCompletePublicationWithoutRetakingOutput() {
+        let sender = Sender(), grant = UUID()
+        let composer = TextComposerSession(sender: sender, draft: .scripture)
+        composer.receive(SenderStatus(connected: true))
+        composer.show()
+        composer.receive(SenderStatus(connected: true, lastGrantedLease: grant, ownerName: "Another source"))
+        XCTAssertFalse(composer.takingOutput)
+        XCTAssertTrue(composer.canShow)
+        XCTAssertFalse(composer.isVisible)
+        XCTAssertEqual(sender.takes, 1, "A takeover must never cause an automatic take")
+        composer.show()
+        composer.receive(SenderStatus(connected: true, lastGrantedLease: grant, ownerName: "Another source"))
+        XCTAssertTrue(composer.takingOutput, "An old grant must not complete the next request")
+        composer.receive(SenderStatus(connected: true, lastGrantedLease: UUID(), ownerName: "Another source"))
+        XCTAssertFalse(composer.takingOutput)
+        XCTAssertEqual(sender.takes, 2)
+    }
     func testTemplateChoiceStaysPrivateAndHideKeepsThePublishedTemplate() {
         let sender = Sender()
         let composer = TextComposerSession(sender: sender, draft: DisplayContent(body: "Text", template: .scripture))

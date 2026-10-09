@@ -168,3 +168,7 @@ The app's deployment target is macOS 12. The test bundle targets macOS 14 to mat
 The checked-in Xcode project opens directly. `scripts/generate-project.py` is an optional maintenance helper to regenerate its file references after adding sources; it requires only Python's standard library. There is no `Package.swift`.
 
 See [manual validation](docs/manual-validation.md) for automated and hardware checks and [protocol/architecture](docs/protocol.md) for the sender contract.
+
+Confidence can also show Eucaly’s live projection picture for explicitly presented media when both apps run on the same Mac. Enable Local Media in Confidence and grant Screen Recording access. AltView remembers this choice and resumes capture automatically after relaunch when permission, a local presentation and a visible Confidence preview or output are available. Lyrics and the local clock retain their existing behaviour; remote Macs continue to support text. See [Confidence setup](docs/confidence.md).
+
+Confidence shows both selected Bible translations from ViewTheWord side by side, each with its translation name, below the shared reference and clock. Audience continues to show only the primary translation. A missing or unselected secondary uses the full-width single-translation layout. Use the current versions of both apps; Confidence data is sent intact without older-receiver downgrades.

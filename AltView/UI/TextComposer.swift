@@ -220,12 +220,13 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         titleField.stringValue = session.draft.title; bodyEditor.string = session.draft.body; footerField.stringValue = session.draft.footer
         refresh()
     }
-    private func receive(_ status: SenderStatus) {
+    func receive(_ status: SenderStatus) {
         guard status.connectionID == activeConnectionID else { return }
         let wasConnected = session.status.connected
         let wasOwner = session.status.ownsOutput
+        let wasTakingOutput = session.takingOutput
         session.receive(status)
-        if wasOwner && !status.ownsOutput { cancelLocalPublish?() }
+        if !status.ownsOutput && (wasOwner || (wasTakingOutput && !session.takingOutput)) { cancelLocalPublish?() }
         if !status.connected && status.message.hasPrefix("Disconnected.") { session.cancelPending(); cancelLocalPublish?() }
         if status.connected, !wasConnected {
             connectionNote = ""

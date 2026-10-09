@@ -81,10 +81,14 @@ def main():
             send('ViewTheWord', 'publish')
             wait('ViewTheWord explicitly takes text from eucaly', lambda: read().get('body') == 'Primary verse' and read().get('owner') == 'ViewTheWord')
             assert read()['confidence']['title'] == 'John 3:16' and read()['confidence']['footer'] == 'Primary translation'
+            wait('both translations reach Confidence while Audience remains primary only', lambda: read().get('confidence', {}).get('secondary') == {'body': 'Secondary verse', 'footer': 'Secondary translation'} and read().get('body') == 'Primary verse')
             send('eucaly', 'hidden-navigation')
             send('ViewTheWord', 'hide')
             wait('audience blanking and hidden lyric browsing preserve the verse', lambda: read().get('body') == 'Primary verse' and not read().get('visible', True))
             assert read()['confidence']['body'] == 'Primary verse'
+            assert read()['confidence']['secondary']['body'] == 'Secondary verse'
+            send('ViewTheWord', 'primary-only')
+            wait('removing secondary clears it while hidden Audience keeps primary', lambda: read().get('confidence', {}).get('secondary') is None and read().get('body') == 'Primary verse' and not read().get('visible', True))
             send('ViewTheWord', 'stop')
             wait('Stop clears text without restoring lyrics', lambda: read().get('owner') is None and read().get('body') == '')
             send('eucaly', 'next')
@@ -98,12 +102,31 @@ def main():
             assert read().get('owner') is None and read()['body'] == ''
             send('ViewTheWord', 'publish')
             wait('Scripture projects after restart', lambda: read().get('body') == 'Primary verse')
+            wait('both translations restore after fresh negotiation', lambda: read().get('confidence', {}).get('secondary', {}).get('body') == 'Secondary verse')
             send('eucaly', 'disconnect')
             wait('disconnecting eucaly preserves Scripture', lambda: read().get('connections') == 1 and read().get('body') == 'Primary verse')
             send('eucaly', 'reconnect')
             wait('connect-only reconnect preserves Scripture', lambda: read().get('connections') == 2 and read().get('body') == 'Primary verse' and read().get('owner') == 'ViewTheWord')
             send('receiver', 'clear')
             wait('Clear cancels stale presentation restoration', lambda: read().get('owner') is None and not read().get('confidence', {}).get('body'))
+            send('eucaly', 'media')
+            wait('local media report has verified loopback process identity and no lyrics', lambda: read().get('mediaWindow') == 77 and read().get('localSource') and read()['confidence']['body'] == '')
+            send('eucaly', 'hide')
+            wait('media audience Hide retains projection mode', lambda: read().get('mediaWindow') == 77 and not read().get('visible', True))
+            send('eucaly', 'recreated')
+            wait('recreated window replaces the exact reported source', lambda: read().get('mediaWindow') == 88 and read().get('localSource'))
+            send('eucaly', 'clear')
+            wait('Clear removes obsolete media', lambda: read().get('mediaWindow') is None and read()['confidence']['body'] == '')
+            send('eucaly', 'media')
+            wait('fresh media can follow Clear', lambda: read().get('mediaWindow') == 77)
+            send('ViewTheWord', 'next')
+            wait('existing text sender replaces media through normal ownership', lambda: read().get('mediaWindow') is None and read().get('owner') == 'ViewTheWord')
+            wait('media takeover restores dual Confidence without adding secondary to Audience', lambda: read().get('confidence', {}).get('secondary', {}).get('body') == 'Secondary verse' and read().get('body') == 'Next primary verse')
+            send('eucaly', 'reclaim-media')
+            wait('Eucaly can explicitly reclaim media', lambda: read().get('mediaWindow') == 77)
+            assert read()['confidence'].get('secondary') is None
+            send('eucaly', 'disconnect')
+            wait('presenter disconnect clears media without restoring Scripture', lambda: read().get('mediaWindow') is None and read().get('owner') is None)
             print('All real-source confidence integration checks passed.', flush=True)
         except Exception:
             for log in logs:

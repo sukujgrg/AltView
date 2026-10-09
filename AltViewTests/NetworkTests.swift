@@ -4,6 +4,136 @@ import Darwin
 @testable import AltView
 
 final class NetworkTests: XCTestCase {
+    private final class ListenerProbe {
+        private let lock = NSLock()
+        private var listeners: [NWListener] = []
+        func make(_ parameters: NWParameters, _ port: NWEndpoint.Port) throws -> NWListener {
+            let listener = try NWListener(using: parameters, on: port)
+            lock.lock(); listeners.append(listener); lock.unlock()
+            return listener
+        }
+        var all: [NWListener] { lock.lock(); defer { lock.unlock() }; return listeners }
+    }
+    private final class StatusBox {
+        private let lock = NSLock()
+        private var status = SenderStatus()
+        func set(_ status: SenderStatus) { lock.lock(); self.status = status; lock.unlock() }
+        var value: SenderStatus { lock.lock(); defer { lock.unlock() }; return status }
+    }
+    func testWaitingReceiverPreservesListenerAndOwnershipUntilNetworkResumes() throws {
+        let key = try PairingKey.generate(), probe = ListenerProbe()
+        var output = ReceiverStatus(), status = SenderStatus()
+        let server = ReceiverServer(receiverID: UUID(), makeListener: probe.make) { output = $0 }
+        let sender = SenderClient(name: "Network interruption") { status = $0 }
+        defer { sender.disconnect(); server.stop() }
+        server.start(name: "Waiting receiver", key: key, advertise: false)
+        eventually("listener ready") { output.listening }
+        let port = try XCTUnwrap(output.port), listener = try XCTUnwrap(probe.all.first)
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: port)!), key: key)
+        eventually("sender connected") { status.connected }
+        sender.submit(.scripture); sender.takeOutput()
+        eventually("output accepted") { status.feedback.accepted && output.content == .scripture }
+        let queue = try XCTUnwrap(listener.queue)
+        queue.async { listener.stateUpdateHandler?(.waiting(.posix(.ENETDOWN))) }
+        eventually("listener waiting") { output.starting && !output.listening }
+        XCTAssertEqual(output.port, port); XCTAssertEqual(output.ownerID, sender.senderID)
+        XCTAssertEqual(output.connections, 1); XCTAssertEqual(output.content, .scripture)
+        XCTAssertEqual(probe.all.count, 1)
+        queue.async { listener.stateUpdateHandler?(.ready) }
+        eventually("same listener resumes") { output.listening && !output.starting }
+        sender.submit(.lyrics)
+        eventually("existing ownership still publishes") { status.feedback.accepted && output.content == .lyrics }
+        XCTAssertEqual(probe.all.count, 1)
+    }
+    func testFailedRunningListenerRecoversOnSameAutomaticPortAndCredentials() throws {
+        let key = try PairingKey.generate(), id = UUID(), probe = ListenerProbe()
+        var output = ReceiverStatus(), status = SenderStatus()
+        let server = ReceiverServer(receiverID: id, startupRetryTimeout: 0.05, startupRetryInterval: 0.05,
+                                    makeListener: probe.make) { output = $0 }
+        let sender = SenderClient(name: "Reconnected sender") { status = $0 }
+        defer { sender.disconnect(); server.stop() }
+        server.updateTemplatePolicy(.fixed(.lyrics))
+        server.start(name: "Recovery", key: key, advertise: false)
+        eventually("listener ready") { output.listening }
+        let port = try XCTUnwrap(output.port), listener = try XCTUnwrap(probe.all.first)
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: port)!), key: key, expectedReceiverID: id)
+        eventually("sender connected") { status.connected }
+        sender.submit(.lyrics); sender.takeOutput()
+        eventually("output accepted") { output.content == .lyrics && status.feedback.accepted }
+        // Runtime recovery remains available after the initial-start deadline.
+        let queue = try XCTUnwrap(listener.queue)
+        queue.async { listener.stateUpdateHandler?(.failed(.posix(.ENETDOWN))) }
+        eventually("listener recreated and sender restored", timeout: 15) {
+            probe.all.count == 2 && output.listening && output.content == .lyrics && status.feedback.accepted
+        }
+        XCTAssertEqual(output.port, port); XCTAssertEqual(status.receiverID, id)
+        XCTAssertEqual(status.templateCapabilities.policy, .fixed(.lyrics))
+    }
+    func testStoppingReceiverCancelsScheduledRuntimeRecovery() throws {
+        let probe = ListenerProbe()
+        var output = ReceiverStatus()
+        let server = ReceiverServer(receiverID: UUID(), startupRetryInterval: 0.5, makeListener: probe.make) { output = $0 }
+        defer { server.stop() }
+        server.start(name: "Cancelled recovery", key: try PairingKey.generate(), advertise: false)
+        eventually("listener ready") { output.listening }
+        let listener = try XCTUnwrap(probe.all.first), queue = try XCTUnwrap(listener.queue)
+        queue.async { listener.stateUpdateHandler?(.failed(.posix(.ENETDOWN))) }
+        eventually("recovery scheduled") { output.starting && output.message.contains("retrying") }
+        server.stop()
+        eventually("receiver stopped") { !output.starting && !output.listening }
+        let settled = expectation(description: "scheduled recovery cancelled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        XCTAssertEqual(probe.all.count, 1); XCTAssertFalse(output.listening)
+    }
+    func testLongUnicodeSenderNamePairsWithinTheWireLimit() throws {
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus(), status = SenderStatus()
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        let prefix = "AltView Custom Text · "
+        let sender = SenderClient(name: prefix + String(repeating: "👩🏽‍💻é", count: 30)) { status = $0 }
+        defer { sender.disconnect(); server.stop() }
+        XCTAssertTrue(sender.name.hasPrefix(prefix))
+        XCTAssertLessThanOrEqual(sender.name.utf8.count, AltViewProtocol.maximumSenderNameBytes)
+        XCTAssertTrue(sender.name.hasSuffix("é"), "Truncate at whole grapheme boundaries")
+        XCTAssertEqual(SenderClient(name: " \n ") { _ in }.name, "AltView")
+        server.start(name: "Unicode names", key: key, advertise: false)
+        eventually("listener ready") { output.listening }
+        sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!), key: key)
+        eventually("sender paired") { status.connected && output.connectedSenders.first?.name == sender.name }
+    }
+    func testCoalescedTransportGrantAndTakeoverLeaveComposerReadyToPublishAgain() throws {
+        let key = try PairingKey.generate(), box = StatusBox()
+        let callbacks = DispatchQueue(label: "coalesced-sender-status")
+        var output = ReceiverStatus(), otherStatus = SenderStatus(), suspended = false
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        let sender = SenderClient(name: "Custom Text", callbackQueue: callbacks) { box.set($0) }
+        let other = SenderClient(name: "Other presenter") { otherStatus = $0 }
+        defer { if suspended { callbacks.resume() }; sender.disconnect(); other.disconnect(); server.stop() }
+        server.start(name: "Coalescing", key: key, advertise: false)
+        eventually("listener ready") { output.listening }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!)
+        sender.connect(to: endpoint, key: key); other.connect(to: endpoint, key: key)
+        eventually("both connected") { box.value.connected && otherStatus.connected }
+        let composer = TextComposerSession(sender: sender, draft: .scripture)
+        composer.receive(box.value)
+        callbacks.suspend(); suspended = true
+        composer.show()
+        eventually("composer granted") { output.ownerID == sender.senderID && output.content == .scripture }
+        other.submit(.lyrics); other.takeOutput()
+        eventually("other presenter granted") { output.ownerID == other.senderID && otherStatus.ownsOutput }
+        let settled = expectation(description: "ownership messages processed before status delivery")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        callbacks.resume(); suspended = false
+        eventually("latest non-owner status delivered") { box.value.ownerName == other.name && !box.value.ownsOutput }
+        composer.receive(box.value)
+        XCTAssertNotNil(box.value.lastGrantedLease)
+        XCTAssertFalse(composer.takingOutput); XCTAssertTrue(composer.canShow)
+        XCTAssertEqual(output.ownerID, other.senderID, "Recovery must not automatically take output")
+        composer.show()
+        eventually("explicit publish takes output again") { output.ownerID == sender.senderID && output.content == .scripture }
+    }
     func testEndpointUpdateKeepsSessionGuardsAndDoesNotStealOccupiedOutput() throws {
         let receiverID = UUID(), key = try PairingKey.generate(), connectionID = UUID()
         var originalOutput = ReceiverStatus(), movedOutput = ReceiverStatus()
