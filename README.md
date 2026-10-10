@@ -14,7 +14,7 @@ Debug builds use local ad-hoc signing, with no development team required. `make 
 
 AltView checks for updates with Sparkle. Use **AltView → Check for Updates…** or click **Update Available** in the workspace. Automatic checks stay quiet; installation requires a click while output and presentation are stopped. See [self-updates](docs/self-updates.md).
 
-Select **Connections** under **Setup** in the sidebar to find **Receive on this Mac**. It shows an **8-character pairing code** in two groups of four, such as `ABCD-2345`, that you can read and type on the sending Mac, or copy with **Copy Code**. Codes use uppercase letters and digits, excluding confusing `0`, `1`, `I`, and `O`; lowercase input works and the hyphen is optional when typing. Pairing secrets are saved in the data-protection Keychain when the app's signing permits it. An ad-hoc build may instead explain that the code changes when AltView restarts and keep a fresh random secret in memory. In that mode, enter the receiver's new code after restarting it. No secrets are stored in preferences or Bonjour records. Both Macs need this version; previous 64-character codes are no longer accepted.
+Select **Connections** under **Setup** in the sidebar to find **Receive on this Mac**. It shows an **8-character pairing code** in two groups of four, such as `ABCD-2345`, that you can read and type on the sending Mac, or copy with **Copy Code**. Codes use uppercase letters and digits, excluding confusing `0`, `1`, `I`, and `O`; lowercase input works and the hyphen is optional when typing. Receiver codes and Custom Text's remote pairings prefer the data-protection Keychain. When its required entitlement is missing, saves use the encrypted login Keychain with normal app-signature access controls. Reads also check login Keychain when the protected item is absent. Other errors and malformed codes remain visible; Keychain operations do not request background authentication. If saving fails, AltView explains that pairing lasts only for this session. If the receiver's saved code cannot be read, it keeps that item for recovery and uses a temporary code; unlock Keychain and restart to recover it, or explicitly Reset Code to replace it. No secrets are stored in preferences or Bonjour records. Both Macs need this version; previous 64-character codes are no longer accepted.
 
 ## Receive from a sending app
 
@@ -157,6 +157,8 @@ make build
 make test
 make release-check
 ```
+
+Pairing regressions cover protected-item preference, login fallback, receiver and both remote account forms, malformed codes, visible read/save errors, and recovery within a session. For an optional real Keychain persistence check on a development Mac, run `python3 scripts/test-keychain-persistence.py --signing-identity 'Developer ID Application: …'` with your local identity. It compiles the real KeyStore into an isolated signed sandboxed fixture, verifies login Keychain saves and updates across separate processes, and removes its unique test-only accounts. It never accesses the operator's pairing accounts. Two-Mac reconnection and locked/denied Keychain UI behavior remain manual checks.
 
 `make test-release` runs only offline release regressions. `make release-notarize`
 prepares local artifacts; `make release-publish` publishes them. `make release`

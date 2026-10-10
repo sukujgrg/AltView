@@ -240,7 +240,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
                     do { try storePairing(key, account) }
                     catch { DispatchQueue.main.async {
                         guard let self, self.connectionRevision == revision else { return }
-                        self.connectionNote = "Pairing is temporary. Enter the receiver’s code again after restarting AltView."
+                        self.connectionNote = "Keychain could not save this pairing. It is remembered for this session only; enter the receiver’s code again after restarting AltView. \(error.localizedDescription)"
                         self.refresh()
                     } }
                 }
@@ -291,6 +291,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         destinationName.toolTip = destinationName.stringValue
         destinationHint.stringValue = remote ? (connectionNote.isEmpty ? "Text and your template choice are sent. The receiving Mac controls the final design." : connectionNote)
             : "Publishes your text and Design changes together. Open Audience to choose this Mac’s display."
+        destinationHint.toolTip = destinationHint.stringValue
         showButton.title = session.pending != nil ? "Connecting…" : session.takingOutput ? "Showing…" : (remote && !status.connected ? "Connect & Publish Text…" : session.primaryTitle)
         if !remote {
             showButton.title = session.pending != nil ? "Connecting…" : session.takingOutput ? "Publishing…" : "Publish Text & Design"
@@ -595,7 +596,11 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             let result = Result { () throws -> Data in
                 if let key = PairingKey.parse(entered) { return key }
                 if let key = remembered?.key { return key }
-                if let key = try? loadPairing(account) { return key }
+                do {
+                    if let key = try loadPairing(account) { return key }
+                } catch {
+                    throw ComposerConnectionError(message: "Saved pairing could not be read from Keychain. Unlock Keychain and try again, or enter the receiving Mac’s code. \(error.localizedDescription)")
+                }
                 throw ComposerConnectionError(message: "No saved pairing for this Mac. Enter the code in AltView’s Settings (gear icon) on that Mac.")
             }
             DispatchQueue.main.async {

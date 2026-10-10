@@ -2,6 +2,8 @@ import AppKit
 
 final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
     private let defaults: UserDefaults
+    private let loadPairing: (String) throws -> Data?
+    private let storePairing: (Data, String) throws -> Void
     private(set) var customTextEnabled: Bool
     var onPresentationActivityChange: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
@@ -104,11 +106,14 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var updatingDraft = false
 
     init(defaults: UserDefaults = .standard, pairingKey: Data? = nil,
+         loadPairing: @escaping (String) throws -> Data? = KeyStore.read,
+         storePairing: @escaping (Data, String) throws -> Void = { try KeyStore.save($0, account: $1) },
          advertiseReceiver: Bool = true, receiverPort: UInt16 = 0,
          window: NSWindow? = nil, artworkStore: PNGArtworkStore = PNGArtworkStore(),
          displays: @escaping () -> [OutputDisplay] = { OutputDisplay.current },
          presentation: CanvasPresentation = CanvasPresentation()) {
         self.defaults = defaults; self.receiverPort = receiverPort
+        self.loadPairing = loadPairing; self.storePairing = storePairing
         self.advertiseReceiver = advertiseReceiver
         monitorAssignments = DisplayAssignments(defaults: defaults, displays: displays)
         self.artworkStore = artworkStore; self.presentation = presentation
@@ -191,6 +196,8 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         pairingCodeField.isSelectable = true
         pairingCodeField.setAccessibilityLabel("Pairing code")
         pairingCodeField.setAccessibilityIdentifier("receiverPairingCode")
+        pairingLabel.setAccessibilityIdentifier("receiverPairingPersistence")
+        pairingLabel.maximumNumberOfLines = 4
         copyButton.setAccessibilityLabel("Copy Pairing Code")
         resetButton = UI.button("Reset Code…", target: self, action: #selector(resetPairing))
         resetButton.isEnabled = false
@@ -559,24 +566,24 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         }
     }
     private func preparePairing(reset: Bool, resume: Bool) {
+        let loadPairing = self.loadPairing, storePairing = self.storePairing
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let key: Data
-                var saved = true
-                do {
-                    // Unreadable or obsolete saved codes are replaced with the current format.
-                    let existing = reset ? nil : try? KeyStore.read("receiver")
-                    if let existing { key = existing }
-                    else {
-                        let newKey = try PairingKey.generate()
-                        try KeyStore.save(newKey, account: "receiver")
-                        key = newKey
+                var existing: Data?
+                var notice: String?
+                if !reset {
+                    do { existing = try loadPairing("receiver") }
+                    catch {
+                        // Preserve the saved item for recovery or an explicit Reset Code.
+                        notice = "Saved pairing could not be read from Keychain. This code is temporary and changes after restarting. Unlock Keychain and restart AltView to recover the saved code, or use Reset Code. \(error.localizedDescription)"
                     }
-                } catch {
-                    // Ad-hoc builds cannot use the data-protection Keychain.
-                    // Keep a fresh secret only in memory; never store it in defaults.
-                    key = try PairingKey.generate()
-                    saved = false
+                }
+                let key = try existing ?? PairingKey.generate()
+                if existing == nil, notice == nil {
+                    do { try storePairing(key, "receiver") }
+                    catch {
+                        notice = "Keychain could not save this pairing. This code is temporary and changes after restarting AltView. Enter it again on the sending Mac after restarting. \(error.localizedDescription)"
+                    }
                 }
                 DispatchQueue.main.async {
                     guard let self, !self.stopped else { return }
@@ -586,9 +593,8 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
                     self.copyButton.isEnabled = true; self.resetButton.isEnabled = true
                     self.receiveButton.title = "Resume Receiving"
                     self.statusLabel.stringValue = "Receiving paused"
-                    self.pairingLabel.stringValue = saved
-                        ? "Enter this code on the sending Mac. The connection is encrypted."
-                        : "This code changes when AltView restarts. Enter it on the sending Mac."
+                    self.pairingLabel.stringValue = notice ?? "Enter this code on the sending Mac. The connection is encrypted."
+                    self.pairingLabel.toolTip = self.pairingLabel.stringValue
                     if resume || !self.localWaiters.isEmpty { self.startReceiving() }
                 }
             } catch {

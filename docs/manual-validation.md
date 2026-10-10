@@ -1,3 +1,11 @@
+## Login Keychain pairing recovery — 11 October 2026
+
+Receiver and Custom Text pairings retain accessible data-protection items and use login Keychain when reads find no protected item or lack its entitlement. Saves fall back only for the missing-entitlement error. Locked, denied and malformed items remain visible. The receiver preserves unreadable saved entries and explains its temporary session code; Custom Text reports read/save failures while allowing typed-code recovery and session pairing reuse. Secrets remain in Keychain or memory, and queries suppress authentication interaction.
+
+Validation: `make test` passed all **263 app tests** and **104 offline release checks**. Nine new KeyStore tests cover preference, both fallback read paths, save/update behavior, receiver/manual/service account separation, malformed codes, error domains and authentication suppression. Four new window tests and the extended remote-pairing test cover caller recovery and notices. Existing This Mac defaults, media recovery, Bonjour, TLS reconnection and window tests passed. The unsigned Release build succeeded for `x86_64` and `arm64`, retaining the macOS 12 deployment target.
+
+`python3 scripts/test-keychain-persistence.py --signing-identity '<local Developer ID Application identity>'` passed using the real KeyStore in a separate signed, hardened, sandboxed fixture. A native protected save returned the missing-entitlement error; three UUID-namespaced test accounts then persisted in login Keychain across fresh processes. Updating the receiver account preserved both remote accounts. Cleanup and a final empty read passed. Operator pairing entries were never accessed. Real protected-item access, locked/denied Keychain behavior, two physical Macs and Monterey/Intel runtime behavior remain manual checks; protected preference and error behavior were verified with injected regressions.
+
 ## Named TVs and persistent monitor numbers — 8 October 2026
 
 ## Individual sender connections — 8 October 2026

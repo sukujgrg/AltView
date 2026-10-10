@@ -1,5 +1,6 @@
 import AppKit
 import Network
+import Security
 import XCTest
 @testable import AltView
 
@@ -12,6 +13,70 @@ private final class LayoutTestWindow: NSWindow {
 final class WindowTests: XCTestCase {
     // Window regressions use real loopback TLS without Bonjour advertising.
     // Live service discovery is covered separately by NetworkTests.
+    func testReceiverRestoresSavedCodeWithoutRewritingIt() throws {
+        let domain = "AltViewTests.ReceiverSavedPairing.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let key = try PairingKey.generate()
+        let controller = ReceiverWindowController(defaults: defaults,
+            loadPairing: { account in
+                XCTAssertEqual(account, "receiver"); XCTAssertFalse(Thread.isMainThread)
+                return key
+            }, storePairing: { _, _ in XCTFail("A restored code must not be rewritten") },
+            advertiseReceiver: false)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver restores its saved pairing") { controller.pairingKey != nil && controller.receiverStatus.listening }
+        XCTAssertEqual(controller.pairingKey, key)
+        controller.showConnectionsPage()
+        let notice = try XCTUnwrap(descendants(controller.window!.contentView!).compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityIdentifier() == "receiverPairingPersistence"
+        })
+        XCTAssertFalse(notice.stringValue.contains("temporary"))
+    }
+
+    func testReceiverReadFailuresKeepSavedItemAndExplainTemporaryCode() throws {
+        for status in [errSecInteractionNotAllowed, errSecDecode] {
+            let domain = "AltViewTests.ReceiverUnreadablePairing.\(UUID())"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+            let controller = ReceiverWindowController(defaults: defaults,
+                loadPairing: { account in
+                    XCTAssertEqual(account, "receiver"); XCTAssertFalse(Thread.isMainThread)
+                    throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+                }, storePairing: { _, _ in XCTFail("An unreadable saved code must remain available for recovery") },
+                advertiseReceiver: false)
+            defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+            eventually("receiver continues with an explicitly temporary code") { controller.pairingKey != nil && controller.receiverStatus.listening }
+            XCTAssertTrue(PairingKey.isValid(try XCTUnwrap(controller.pairingKey)))
+            controller.showConnectionsPage()
+            let notice = try XCTUnwrap(descendants(controller.window!.contentView!).compactMap { $0 as? NSTextField }.first {
+                $0.accessibilityIdentifier() == "receiverPairingPersistence"
+            })
+            XCTAssertTrue(notice.stringValue.contains("could not be read from Keychain"))
+            XCTAssertTrue(notice.stringValue.contains("temporary"))
+            XCTAssertTrue(notice.stringValue.contains("recover the saved code"))
+            XCTAssertEqual(notice.toolTip, notice.stringValue)
+        }
+    }
+
+    func testReceiverSaveFailureKeepsAttemptedCodeForSessionAndExplainsRestart() throws {
+        let domain = "AltViewTests.ReceiverUnsavedPairing.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        var attempted: Data?
+        let controller = ReceiverWindowController(defaults: defaults, loadPairing: { _ in nil },
+            storePairing: { key, account in
+                XCTAssertFalse(Thread.isMainThread); XCTAssertEqual(account, "receiver")
+                attempted = key
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecAuthFailed))
+            }, advertiseReceiver: false)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        eventually("receiver keeps the unsaved code") { controller.pairingKey != nil && controller.receiverStatus.listening }
+        XCTAssertEqual(controller.pairingKey, attempted)
+        controller.showConnectionsPage()
+        let notice = try XCTUnwrap(descendants(controller.window!.contentView!).compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityIdentifier() == "receiverPairingPersistence"
+        })
+        XCTAssertTrue(notice.stringValue.contains("Keychain could not save"))
+        XCTAssertTrue(notice.stringValue.contains("changes after restarting"))
+    }
     func testAudienceAndConfidencePreviewFramesMatchAcrossWindowSizes() throws {
         _ = NSApplication.shared
         let domain = "AltViewTests.MatchingPreviews.\(UUID())"
@@ -1363,7 +1428,11 @@ final class WindowTests: XCTestCase {
         defer { server.stop() }
         eventually("receiver ready") { output.port != nil }
         let controller = TextComposerViewController(defaults: defaults,
-            loadPairing: { _ in nil }, storePairing: { _, _ in }) { _ in XCTFail("Remote pairing must never connect locally") }
+            loadPairing: { _ in XCTFail("Entered or session pairing must bypass Keychain reads"); return nil },
+            storePairing: { _, _ in
+                XCTAssertFalse(Thread.isMainThread)
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecInteractionNotAllowed))
+            }) { _ in XCTFail("Remote pairing must never connect locally") }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1062, height: 714), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = controller.view
         defer { controller.shutdown(); window.close() }
@@ -1391,6 +1460,11 @@ final class WindowTests: XCTestCase {
         eventually("connection confirmed before sheet closes") { window.attachedSheet == nil && output.connections == 1 }
         XCTAssertNil(output.ownerName, "Connect Only must keep the draft private")
         XCTAssertEqual(output.content, .empty)
+        eventually("unsaved pairing notice remains visible") {
+            self.descendants(controller.view).compactMap { $0 as? NSTextField }.contains {
+                $0.stringValue.contains("Keychain could not save") && $0.stringValue.contains("session only")
+            }
+        }
         try button("Change Receiver…", in: controller.view).performClick(nil)
         let secondSheet = try XCTUnwrap(window.attachedSheet?.contentView)
         XCTAssertEqual(try field("Pairing code", in: secondSheet).stringValue, "")
@@ -1398,6 +1472,53 @@ final class WindowTests: XCTestCase {
         eventually("remembered pairing publishes after one action") { window.attachedSheet == nil && output.content == .scripture }
         try button("Stop Presenting", in: controller.view).performClick(nil)
         eventually("stopped") { output.ownerName == nil }
+    }
+
+    func testRemoteSavedPairingReadErrorIsVisibleAndTypedCodeCanRecover() throws {
+        let domain = "AltViewTests.RemoteUnreadablePairing.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let key = try PairingKey.generate()
+        var output = ReceiverStatus()
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        server.start(name: "Unreadable pairing test", key: key, advertise: false)
+        defer { server.stop() }
+        eventually("receiver ready") { output.port != nil }
+        let account = "sender.127.0.0.1:\(try XCTUnwrap(output.port))"
+        let saved = expectation(description: "typed pairing saved off the main thread")
+        let controller = TextComposerViewController(defaults: defaults,
+            loadPairing: { value in
+                XCTAssertEqual(value, account); XCTAssertFalse(Thread.isMainThread)
+                throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecInteractionNotAllowed))
+            }, storePairing: { value, name in
+                XCTAssertEqual(value, key); XCTAssertEqual(name, account); XCTAssertFalse(Thread.isMainThread)
+                saved.fulfill()
+            }) { _ in XCTFail("Remote recovery must not use This Mac") }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1062, height: 714), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = controller.view
+        defer { controller.shutdown(); window.close() }
+        let destination = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? NSPopUpButton }.first)
+        destination.selectItem(at: 1); destination.sendAction(destination.action, to: destination.target)
+        let sheet = try XCTUnwrap(window.attachedSheet?.contentView)
+        try button("Connect using an address instead", in: sheet).performClick(nil)
+        let host = try field("Receiver address", in: sheet); host.stringValue = "127.0.0.1"
+        try field("Receiver port", in: sheet).stringValue = String(try XCTUnwrap(output.port))
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: host))
+        try button("Connect Only", in: sheet).performClick(nil)
+        eventually("Keychain read failure is explained") {
+            self.descendants(sheet).compactMap { $0 as? NSTextField }.contains {
+                $0.stringValue.contains("could not be read from Keychain") && $0.stringValue.contains("Unlock Keychain")
+            }
+        }
+        XCTAssertNotNil(window.attachedSheet)
+        XCTAssertEqual(output.connections, 0)
+        let code = try field("Pairing code", in: sheet); code.stringValue = PairingKey.text(key)
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: code))
+        try button("Connect Only", in: sheet).performClick(nil)
+        eventually("typed code recovers without publishing") { window.attachedSheet == nil && output.connections == 1 }
+        wait(for: [saved], timeout: 3)
+        XCTAssertNil(output.ownerName)
+        XCTAssertEqual(output.content, .empty)
     }
     func testStalledFirstConnectionRetriesAndPublishesWithoutAnotherClick() throws {
         let domain = "AltViewTests.PairingRetry.\(UUID())"
