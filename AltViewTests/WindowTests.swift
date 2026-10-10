@@ -1933,6 +1933,10 @@ final class WindowTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertFalse(window.contentView?.hasAmbiguousLayout ?? true)
         XCTAssertEqual(connections, 0, "Opening the composer must not connect or take output")
+        let destination = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Text destination"
+        })
+        XCTAssertEqual(destination.selectedItem?.title, "This Mac")
         controller.shutdown()
         window.close()
     }

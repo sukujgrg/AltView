@@ -226,6 +226,7 @@ protocol ProjectionCaptureEngine: AnyObject {
 /// Capture readiness is separate from the operator's saved On/Off choice.
 enum ConfidenceMediaState: Equatable {
     case off, unsupported, permissionNeeded, waitingForMedia, paused, sleeping, remote, waitingForWindow
+    case unverified(LocalProjectionSourceIssue)
     case connecting, waitingForPicture, live, blank, suspended, stopped, retrying, slow, holding
 
     var title: String {
@@ -235,7 +236,8 @@ enum ConfidenceMediaState: Equatable {
         case .permissionNeeded: return "Permission needed"
         case .waitingForMedia: return "Waiting for media"
         case .paused, .sleeping, .suspended: return "Paused"
-        case .remote: return "Requires Eucaly on this Mac"
+        case .remote: return "Connection is not local"
+        case .unverified: return "Cannot verify local Eucaly"
         case .waitingForWindow: return "Waiting for projection window"
         case .connecting, .slow: return "Connecting"
         case .waitingForPicture: return "Waiting for picture"
@@ -254,7 +256,19 @@ enum ConfidenceMediaState: Equatable {
         case .waitingForMedia: return "Present a media slide from Eucaly’s Current pane. Browsing Preview stays private."
         case .paused: return "Capture resumes when Confidence’s preview or display is visible."
         case .sleeping: return "Capture resumes when this Mac’s displays wake."
-        case .remote: return "Run Eucaly and AltView on the same Mac and connect using This Mac. Media cannot be received over the network."
+        case .remote: return "In Eucaly’s AltView settings, reconnect using This Mac. Both apps must run here; media cannot be received over the network."
+        case .unverified(let issue):
+            switch issue {
+            case .missingIdentity, .invalidIdentity:
+                return "Eucaly connected locally but did not provide a usable media identity. Restart Eucaly, then reconnect using This Mac. Check that both apps are up to date."
+            case .bootMismatch:
+                return "Eucaly’s media identity does not match this Mac’s current session. Restart both apps, then reconnect using This Mac."
+            case .processUnavailable:
+                return "Eucaly connected locally, but macOS has not made its process information available. AltView will check again automatically. If this continues, restart both apps."
+            case .processChanged:
+                return "Eucaly’s media identity is from a process that is no longer running. Reconnect Eucaly using This Mac."
+            case .remote: return ConfidenceMediaState.remote.detail
+            }
         case .waitingForWindow: return "Open Eucaly’s projection and present the media slide."
         case .connecting: return "Connecting to Eucaly’s projection…"
         case .waitingForPicture: return "Waiting for Eucaly’s projection picture…"
@@ -277,7 +291,7 @@ enum ConfidenceMediaState: Equatable {
     }
     var needsAttention: Bool {
         switch self {
-        case .permissionNeeded, .remote, .unsupported, .stopped, .retrying: return true
+        case .permissionNeeded, .remote, .unverified, .unsupported, .stopped, .retrying: return true
         default: return false
         }
     }
@@ -406,7 +420,11 @@ final class ConfidenceMediaController {
         guard enabled else { engine?.update(nil); setState(.off); return }
         guard #available(macOS 12.3, *) else { setState(.unsupported); return }
         guard !systemSleeping && !screensSleeping else { engine?.update(nil); setState(.sleeping); return }
-        if let request, request.process == nil { engine?.update(nil); setState(.remote); return }
+        if let request, request.process == nil {
+            engine?.update(nil)
+            let issue = request.sourceIssue ?? .remote
+            setState(issue == .remote ? .remote : .unverified(issue)); return
+        }
         guard hasPermission() else {
             engine?.update(nil); clear()
             setState(.permissionNeeded); return

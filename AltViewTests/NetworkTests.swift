@@ -20,6 +20,71 @@ final class NetworkTests: XCTestCase {
         func set(_ status: SenderStatus) { lock.lock(); self.status = status; lock.unlock() }
         var value: SenderStatus { lock.lock(); defer { lock.unlock() }; return status }
     }
+    private final class ProcessLookupProbe {
+        private let lock = NSLock()
+        private var available = false
+        func recover() { lock.lock(); available = true; lock.unlock() }
+        func read(_ pid: Int32) -> UInt64? {
+            lock.lock(); let available = available; lock.unlock()
+            return available ? LocalProjectionProcess.startTime(for: pid) : nil
+        }
+    }
+    func testLoopbackIncludesIPv4MappedIPv6AndRejectsNetworkAndUnresolvedNames() throws {
+        for address in ["127.0.0.1", "127.0.0.2", "127.255.255.255", "::1"] {
+            XCTAssertTrue(ReceiverServer.isLoopback(.hostPort(host: .init(address), port: 49721)), address)
+        }
+        // Construct an IPv6 host explicitly: parsing an NWEndpoint.Host string
+        // can normalize mapped addresses into IPv4 and miss the socket case.
+        for address in ["::ffff:127.0.0.1", "::ffff:127.10.20.30"] {
+            let host = NWEndpoint.Host.ipv6(try XCTUnwrap(IPv6Address(address)))
+            XCTAssertTrue(ReceiverServer.isLoopback(.hostPort(host: host, port: 49721)), address)
+        }
+        for address in ["192.168.1.2", "10.0.0.1", "::127.0.0.1", "fe80::1", "localhost", "presentation.local"] {
+            XCTAssertFalse(ReceiverServer.isLoopback(.hostPort(host: .init(address), port: 49721)), address)
+        }
+        let remoteMapped = NWEndpoint.Host.ipv6(try XCTUnwrap(IPv6Address("::ffff:192.168.1.2")))
+        XCTAssertFalse(ReceiverServer.isLoopback(.hostPort(host: remoteMapped, port: 49721)))
+        XCTAssertFalse(ReceiverServer.isLoopback(.service(name: "Local", type: AltViewProtocol.serviceType, domain: "local.", interface: nil)))
+    }
+    func testLocalMediaRecoversProcessLookupOnHeartbeatWithoutRepublishing() throws {
+        let key = try PairingKey.generate(), process = try XCTUnwrap(LocalProjectionProcess.current)
+        let probe = ProcessLookupProbe()
+        var output = ReceiverStatus()
+        let server = ReceiverServer(receiverID: UUID(), verifyLocalProcess: { $0.sourceIssue(readStartTime: probe.read) }) { output = $0 }
+        server.start(name: "Local verification recovery", key: key, advertise: false)
+        eventually("listener ready") { output.listening }
+        let queue = DispatchQueue(label: "local-media-test-peer")
+        let peer = PeerChannel(connection: NWConnection(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!),
+                                                       using: SecureConnection.parameters(key: key)), queue: queue)
+        let presentation = ProjectionPresentation(sessionID: UUID(), mode: .media, windowID: 77, windowGeneration: UUID())
+        peer.onReady = { [weak peer] in peer?.send(.init(kind: .hello, senderID: UUID(), name: "Eucaly", capabilities: AltViewProtocol.capabilities, localProcess: process)) }
+        peer.onMessage = { [weak peer] message in
+            guard let peer else { return }
+            if message.kind == .welcome { peer.send(.init(kind: .take)) }
+            if message.kind == .granted, let lease = message.lease {
+                peer.send(.init(kind: .state, lease: lease, revision: 1, content: .init(visible: false, projection: presentation)))
+            }
+        }
+        defer { queue.async { peer.close(nil) }; server.stop() }
+        queue.async { peer.start() }
+        eventually("accepted media explains local lookup failure") { output.confidenceMedia?.sourceIssue == .processUnavailable }
+        let accepted = try XCTUnwrap(output.confidenceMedia)
+        XCTAssertNil(accepted.process); XCTAssertEqual(output.confidenceContent, .empty)
+        probe.recover()
+        queue.async { peer.send(.init(kind: .heartbeat)) }
+        eventually("same accepted media gains a verified local source") { output.confidenceMedia?.process == process }
+        let recovered = try XCTUnwrap(output.confidenceMedia)
+        XCTAssertNil(recovered.sourceIssue)
+        XCTAssertEqual(recovered.connection, accepted.connection); XCTAssertEqual(recovered.lease, accepted.lease)
+        XCTAssertEqual(recovered.revision, 1); XCTAssertEqual(recovered.presentation, presentation)
+        server.clearOutput()
+        eventually("Clear removes media") { output.confidenceMedia == nil }
+        queue.async { peer.send(.init(kind: .heartbeat)) }
+        let settled = expectation(description: "late verification cannot restore cleared media")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        XCTAssertNil(output.confidenceMedia); XCTAssertNil(output.ownerID)
+    }
     func testWaitingReceiverPreservesListenerAndOwnershipUntilNetworkResumes() throws {
         let key = try PairingKey.generate(), probe = ListenerProbe()
         var output = ReceiverStatus(), status = SenderStatus()

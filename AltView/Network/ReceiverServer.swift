@@ -32,6 +32,7 @@ final class ReceiverServer {
     private var peers: [UUID: PeerChannel] = [:]
     private var disconnectedSenders: [UUID: SenderIdentity] = [:]
     private var localProcesses: [UUID: LocalProjectionProcess] = [:]
+    private var localConnections: Set<UUID> = []
     private var peerCapabilities: [UUID: Set<String>] = [:]
     private var outputReadiness = OutputReadiness.closed
     private var templatePolicy = TemplatePolicy.sender
@@ -44,6 +45,7 @@ final class ReceiverServer {
     private var startID: UUID?
     private var retryWork: DispatchWorkItem?
     private let makeListener: (NWParameters, NWEndpoint.Port) throws -> NWListener
+    private let verifyLocalProcess: (LocalProjectionProcess) -> LocalProjectionSourceIssue?
     private var hasListened = false
     private var restartPort: UInt16?
     private var recoveryAttempts = 0
@@ -60,11 +62,13 @@ final class ReceiverServer {
     init(receiverID: UUID, callbackQueue: DispatchQueue = .main,
          startupRetryTimeout: TimeInterval = AltViewProtocol.connectionTimeout, startupRetryInterval: TimeInterval = 1,
          makeListener: @escaping (NWParameters, NWEndpoint.Port) throws -> NWListener = { try NWListener(using: $0, on: $1) },
+         verifyLocalProcess: @escaping (LocalProjectionProcess) -> LocalProjectionSourceIssue? = { $0.sourceIssue() },
          onStatus: @escaping (ReceiverStatus) -> Void) {
         self.receiverID = receiverID
         self.startupRetryTimeout = startupRetryTimeout
         self.startupRetryInterval = startupRetryInterval
         self.makeListener = makeListener
+        self.verifyLocalProcess = verifyLocalProcess
         delivery = SnapshotMailbox(queue: callbackQueue, consume: onStatus)
     }
     func start(name: String, key: Data, port: UInt16 = 0, advertise: Bool = true) {
@@ -242,6 +246,7 @@ final class ReceiverServer {
         peers.removeAll()
         peerCapabilities.removeAll()
         localProcesses.removeAll()
+        localConnections.removeAll()
         for peer in closing { peer.onClose = nil; peer.close(nil) }
         state = ReceiverState()
         status = ReceiverStatus()
@@ -265,6 +270,7 @@ final class ReceiverServer {
             self.state.disconnect(peer.id)
             self.peerCapabilities.removeValue(forKey: peer.id)
             self.localProcesses.removeValue(forKey: peer.id)
+            self.localConnections.remove(peer.id)
             if wasOwner { self.status.message = "Sender disconnected — output cleared" }
             self.broadcastOwnership()
             self.publish()
@@ -290,11 +296,14 @@ final class ReceiverServer {
                   message.capabilities?.allSatisfy({ $0.utf8.count <= 64 }) ?? true else { peer.close("Invalid capabilities."); return }
             let negotiated = Set(message.capabilities ?? []).intersection(AltViewProtocol.capabilities)
             peerCapabilities[peer.id] = negotiated
-            if negotiated.contains(AltViewProtocol.localProjection), Self.isLoopback(peer.connection),
-               let process = message.localProcess, process.isLiveLocalProcess {
-                localProcesses[peer.id] = process
+            if negotiated.contains(AltViewProtocol.localProjection),
+               Self.isLoopback(peer.connection.currentPath?.remoteEndpoint ?? peer.connection.endpoint) {
+                localConnections.insert(peer.id)
+                // Retain the report, not a one-time verification result. A
+                // transient process lookup failure must not poison this session.
+                localProcesses[peer.id] = message.localProcess
             }
-            AltViewLog.receiver.notice("sender_identified peer=\(peer.id.uuidString, privacy: .public) occupied=\(self.state.ownerConnection != nil)")
+            AltViewLog.receiver.notice("sender_identified peer=\(peer.id.uuidString, privacy: .public) occupied=\(self.state.ownerConnection != nil) local_connection=\(self.localConnections.contains(peer.id)) local_identity_reported=\(message.localProcess != nil)")
             peer.send(WireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name,
                                  templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy,
                                  capabilities: negotiated.sorted()))
@@ -319,9 +328,13 @@ final class ReceiverServer {
             guard let lease = message.lease, let revision = message.revision, let content = message.content, content.isValid else {
                 peer.close("Invalid content snapshot."); return
             }
+            let source = projectionSource(connection: peer.id)
             if state.apply(connection: peer.id, lease: lease, revision: revision, content: content,
                            supportsProjection: peerCapabilities[peer.id]?.contains(AltViewProtocol.localProjection) == true,
-                           localProcess: localProcesses[peer.id].flatMap { $0.isLiveLocalProcess ? $0 : nil }) {
+                           localProcess: source.process, sourceIssue: source.issue) {
+                if content.projection?.mode == .media {
+                    AltViewLog.receiver.notice("media_source peer=\(peer.id.uuidString, privacy: .public) verification=\(source.issue?.rawValue ?? "verified", privacy: .public)")
+                }
                 AltViewLog.receiver.info("snapshot_accepted peer=\(peer.id.uuidString, privacy: .public) lease=\(lease.uuidString, privacy: .public) revision=\(revision) visible=\(content.visible) title_bytes=\(content.title.utf8.count) body_bytes=\(content.body.utf8.count) footer_bytes=\(content.footer.utf8.count) output=\(self.outputReadiness.rawValue, privacy: .public)")
                 publish()
                 sendFeedback(to: peer)
@@ -336,15 +349,34 @@ final class ReceiverServer {
                 broadcastOwnership()
                 publish()
             }
-        case .heartbeat: break
+        case .heartbeat:
+            if state.confidenceMedia?.connection == peer.id,
+               state.confidenceMedia?.sourceIssue == .processUnavailable {
+                let source = projectionSource(connection: peer.id)
+                if state.refreshMediaSource(connection: peer.id, process: source.process, sourceIssue: source.issue) {
+                    AltViewLog.receiver.notice("media_source peer=\(peer.id.uuidString, privacy: .public) verification=\(source.issue?.rawValue ?? "verified", privacy: .public)")
+                    publish()
+                }
+            }
         default: peer.close("Unexpected sender message.")
         }
     }
-    private static func isLoopback(_ connection: NWConnection) -> Bool {
-        guard case .hostPort(let host, _) = connection.currentPath?.remoteEndpoint ?? connection.endpoint else { return false }
+    private func projectionSource(connection: UUID) -> (process: LocalProjectionProcess?, issue: LocalProjectionSourceIssue?) {
+        guard localConnections.contains(connection) else { return (nil, .remote) }
+        guard let process = localProcesses[connection] else { return (nil, .missingIdentity) }
+        let issue = verifyLocalProcess(process)
+        return (issue == nil ? process : nil, issue)
+    }
+    static func isLoopback(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
         switch host {
         case .ipv4(let address): return address.rawValue.first == 127
-        case .ipv6(let address): return address == IPv6Address.loopback
+        case .ipv6(let address):
+            if address.isLoopback { return true }
+            // Dual-stack sockets can report 127/8 as ::ffff:127.x.x.x.
+            let bytes = Array(address.rawValue)
+            return bytes.count == 16 && bytes.prefix(10).allSatisfy { $0 == 0 }
+                && bytes[10] == 0xff && bytes[11] == 0xff && bytes[12] == 127
         default: return false
         }
     }

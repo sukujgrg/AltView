@@ -64,6 +64,33 @@ final class LocalProjectionTests: XCTestCase {
         let legacy = try JSONDecoder().decode(DisplayContent.self, from: Data(#"{"body":"Legacy","visible":true}"#.utf8))
         XCTAssertNil(legacy.projection)
     }
+    func testLocalIdentityFailuresStayDistinctAndNeverVerifyChangedProcesses() throws {
+        let process = try XCTUnwrap(LocalProjectionProcess.current)
+        XCTAssertNil(process.sourceIssue())
+        XCTAssertEqual(process.sourceIssue(localMarker: nil), .bootMismatch)
+        XCTAssertEqual(process.sourceIssue(localMarker: String(repeating: "0", count: 64)), .bootMismatch)
+        XCTAssertEqual(process.sourceIssue(readStartTime: { _ in nil }), .processUnavailable)
+        XCTAssertEqual(process.sourceIssue(readStartTime: { _ in process.startTime + 1 }), .processChanged)
+        XCTAssertEqual(LocalProjectionProcess(processID: 0, startTime: 0, bootMarker: "").sourceIssue(), .invalidIdentity)
+    }
+    func testLocalVerificationRefreshCannotReplaceAnAcceptedOwnerOrReport() throws {
+        var state = ReceiverState()
+        let connection = UUID(), other = UUID(), process = try XCTUnwrap(LocalProjectionProcess.current)
+        XCTAssertTrue(state.register(connection: connection, senderID: UUID(), name: "Eucaly"))
+        XCTAssertTrue(state.register(connection: other, senderID: UUID(), name: "Other"))
+        let lease = try XCTUnwrap(state.take(connection: connection))
+        let report = presentation()
+        XCTAssertTrue(state.apply(connection: connection, lease: lease, revision: 1,
+                                  content: .init(visible: false, projection: report), supportsProjection: true,
+                                  sourceIssue: .processUnavailable))
+        XCTAssertFalse(state.refreshMediaSource(connection: other, process: process, sourceIssue: nil))
+        XCTAssertTrue(state.refreshMediaSource(connection: connection, process: process, sourceIssue: nil))
+        XCTAssertEqual(state.confidenceMedia?.presentation, report); XCTAssertEqual(state.confidenceMedia?.revision, 1)
+        XCTAssertFalse(state.refreshMediaSource(connection: connection, process: process, sourceIssue: nil))
+        _ = state.take(connection: other)
+        XCTAssertFalse(state.refreshMediaSource(connection: connection, process: process, sourceIssue: nil))
+        XCTAssertNil(state.confidenceMedia)
+    }
     func testAspectPreservingCaptureBounds() {
         XCTAssertEqual(ProjectionCaptureSizing.size(.init(width: 3840, height: 2160)), .init(width: 1920, height: 1080))
         XCTAssertEqual(ProjectionCaptureSizing.size(.init(width: 2000, height: 3000)), .init(width: 720, height: 1080))
@@ -306,6 +333,25 @@ final class ConfidenceCaptureLifecycleTests: XCTestCase {
         XCTAssertNil(controller.state.action)
         XCTAssertEqual(asks, 0)
         XCTAssertTrue(engine.requests.allSatisfy { $0 == nil })
+    }
+    func testLocalVerificationFailureDoesNotClaimEucalyIsOnAnotherMacOrStartCapture() {
+        let engine = Engine()
+        var asks = 0
+        let controller = ConfidenceMediaController(engine: engine, hasPermission: { false }, askPermission: { asks += 1 })
+        defer { controller.shutdown() }
+        controller.setDemand(true)
+        for issue in [LocalProjectionSourceIssue.missingIdentity, .invalidIdentity, .bootMismatch, .processUnavailable, .processChanged] {
+            controller.update(.init(connection: UUID(), lease: UUID(), revision: 1,
+                                    presentation: .init(sessionID: UUID(), mode: .media, windowID: 77, windowGeneration: UUID()),
+                                    process: nil, sourceIssue: issue))
+            if !controller.enabled { controller.toggleEnabled() }
+            XCTAssertEqual(controller.state, .unverified(issue))
+            XCTAssertEqual(controller.state.title, "Cannot verify local Eucaly")
+            XCTAssertTrue(controller.state.needsAttention)
+            XCTAssertNil(controller.state.action)
+        }
+        XCTAssertEqual(asks, 0); XCTAssertTrue(engine.requests.allSatisfy { $0 == nil })
+        XCTAssertTrue(ConfidenceMediaState.unverified(.processUnavailable).detail.contains("automatically"))
     }
     func testPermissionOnlyFromExplicitActionAndClosedHiddenOutputsPause() {
         let engine = Engine(); var allowed = false, asks = 0

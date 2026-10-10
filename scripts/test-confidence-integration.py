@@ -7,7 +7,9 @@ Keychain, apps, displays, or saved content. No source copies or protocol mocks.
 import argparse
 import json
 import platform
+import plistlib
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -19,6 +21,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--eucaly', type=Path, default=root.parent / 'eucaly')
     parser.add_argument('--viewtheword', type=Path, default=root.parent / 'ViewTheWord')
+    parser.add_argument('--sandbox-receiver', action='store_true',
+                        help='Sign the isolated receiver with AltView App Sandbox permissions; needs codesign and local networking.')
     args = parser.parse_args()
     build = root / 'build' / 'ConfidenceIntegration'
     build.mkdir(parents=True, exist_ok=True)
@@ -45,10 +49,34 @@ def main():
         processes = []
         logs = []
         try:
+            receiver_executable = build / 'receiver'
+            if args.sandbox_receiver:
+                bundle_id = 'com.suku.AltView.ConfidenceIntegration'
+                bundle = directory / 'ConfidenceReceiver.app'
+                contents = bundle / 'Contents'
+                (contents / 'MacOS').mkdir(parents=True)
+                receiver_executable = contents / 'MacOS' / 'receiver'
+                shutil.copy2(build / 'receiver', receiver_executable)
+                info = plistlib.loads((root / 'AltView/Info.plist').read_bytes())
+                info.update(CFBundleIdentifier=bundle_id, CFBundleExecutable='receiver',
+                            CFBundleName='AltView Confidence Integration', CFBundlePackageType='APPL',
+                            CFBundleVersion='1', LSMinimumSystemVersion='14.0')
+                (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
+                entitlements = plistlib.loads((root / 'AltView/AltView.entitlements').read_bytes())
+                mach_key = 'com.apple.security.temporary-exception.mach-lookup.global-name'
+                entitlements[mach_key] = [name.replace('$(PRODUCT_BUNDLE_IDENTIFIER)', bundle_id)
+                                          for name in entitlements.get(mach_key, [])]
+                # Only test command/status files need access outside the fixture
+                # container. Network and process lookup use the app's real policy.
+                entitlements['com.apple.security.temporary-exception.files.absolute-path.read-write'] = [str(directory.resolve()) + '/']
+                entitlement_file = directory / 'receiver.entitlements'
+                entitlement_file.write_bytes(plistlib.dumps(entitlements))
+                subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(entitlement_file), str(bundle)], check=True)
             for role in sources:
                 log = (directory / (role + '.log')).open('w+')
                 logs.append(log)
-                processes.append(subprocess.Popen([str(build / role), temporary, identity, role], stdout=log, stderr=log))
+                executable = receiver_executable if role == 'receiver' else build / role
+                processes.append(subprocess.Popen([str(executable), temporary, identity, role], stdout=log, stderr=log))
 
             def read(role='receiver'):
                 try:
@@ -111,6 +139,7 @@ def main():
             wait('Clear cancels stale presentation restoration', lambda: read().get('owner') is None and not read().get('confidence', {}).get('body'))
             send('eucaly', 'media')
             wait('local media report has verified loopback process identity and no lyrics', lambda: read().get('mediaWindow') == 77 and read().get('localSource') and read()['confidence']['body'] == '')
+            assert read().get('mediaSourceIssue') is None
             send('eucaly', 'hide')
             wait('media audience Hide retains projection mode', lambda: read().get('mediaWindow') == 77 and not read().get('visible', True))
             send('eucaly', 'recreated')

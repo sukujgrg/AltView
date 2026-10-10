@@ -122,6 +122,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         previewNote.maximumNumberOfLines = 3
         draftLabel.maximumNumberOfLines = 2
         destinationPicker.addItems(withTitles: ["This Mac", "Another Mac"])
+        destinationPicker.selectItem(at: 0)
         destinationPicker.target = self; destinationPicker.action = #selector(destinationChanged)
         destinationPicker.setAccessibilityLabel("Text destination")
         connectionButton.title = "Connect…"; connectionButton.bezelStyle = .rounded

@@ -9,6 +9,7 @@ struct HarnessStatus: Encodable {
     let confidence: ConfidenceText
     let mediaWindow: UInt32?
     let localSource: Bool
+    let mediaSourceIssue: String?
 }
 
 @main
@@ -19,7 +20,9 @@ enum ConfidenceReceiverHarness {
         let key = PairingKey.parse("ABCD2345")!
         let receiver = ReceiverServer(receiverID: id) { status in
             let snapshot = HarnessStatus(port: status.port, connections: status.connections, owner: status.ownerName,
-                body: status.content.body, visible: status.content.visible, confidence: status.confidenceContent, mediaWindow: status.confidenceMedia?.presentation.windowID, localSource: status.confidenceMedia?.process != nil)
+                body: status.content.body, visible: status.content.visible, confidence: status.confidenceContent,
+                mediaWindow: status.confidenceMedia?.presentation.windowID, localSource: status.confidenceMedia?.process != nil,
+                mediaSourceIssue: status.confidenceMedia?.sourceIssue?.rawValue)
             if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: directory.appendingPathComponent("receiver-status.json"), options: .atomic) }
         }
         let name = "Confidence integration \(id)"

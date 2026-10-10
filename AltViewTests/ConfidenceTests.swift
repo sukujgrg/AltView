@@ -242,10 +242,19 @@ final class ConfidenceTests: XCTestCase {
         try render("waiting")
         controller.update(.init(ownerName: "Eucaly · Other Mac", confidenceMedia: .init(connection: UUID(), lease: UUID(), revision: 1,
             presentation: .init(sessionID: UUID(), mode: .media, windowID: 77, windowGeneration: UUID()), process: nil)))
-        XCTAssertEqual(state.stringValue, "Requires Eucaly on this Mac")
+        XCTAssertEqual(state.stringValue, "Connection is not local")
         XCTAssertFalse(notice.isHidden); XCTAssertTrue(action.isHidden)
         XCTAssertTrue(descendants(notice).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("over the network") })
         try render("remote")
+
+        controller.update(.init(ownerName: "Eucaly · This Mac", confidenceMedia: .init(connection: UUID(), lease: UUID(), revision: 1,
+            presentation: .init(sessionID: UUID(), mode: .media, windowID: 77, windowGeneration: UUID()),
+            process: nil, sourceIssue: .missingIdentity)))
+        XCTAssertEqual(state.stringValue, "Cannot verify local Eucaly")
+        XCTAssertFalse(notice.isHidden); XCTAssertTrue(action.isHidden)
+        XCTAssertTrue(descendants(notice).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("connected locally") })
+        XCTAssertEqual(asks, 1, "An unverified local source cannot request capture access")
+        try render("unverified")
 
         let output = ConfidenceCanvas(presentation: controller.presentation)
         output.frame = NSRect(x: 0, y: 0, width: 960, height: 540)

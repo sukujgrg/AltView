@@ -35,6 +35,10 @@ struct ConfidenceText: Codable, Equatable, Sendable {
     var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (secondary?.isValid ?? true) }
 }
 
+enum LocalProjectionSourceIssue: String, Equatable {
+    case remote, missingIdentity, invalidIdentity, bootMismatch, processUnavailable, processChanged
+}
+
 /// Same-boot process identity. Public metadata, never a pairing credential.
 struct LocalProjectionProcess: Codable, Equatable, Sendable {
     let processID: Int32
@@ -53,7 +57,14 @@ struct LocalProjectionProcess: Codable, Equatable, Sendable {
         return Self(processID: pid, startTime: start, bootMarker: marker)
     }
     var isLiveLocalProcess: Bool {
-        isValid && bootMarker == LocalReceiverMarker.current && Self.startTime(for: processID) == startTime
+        sourceIssue() == nil
+    }
+    func sourceIssue(localMarker: String? = LocalReceiverMarker.current,
+                     readStartTime: (Int32) -> UInt64? = Self.startTime(for:)) -> LocalProjectionSourceIssue? {
+        guard isValid else { return .invalidIdentity }
+        guard let localMarker, bootMarker == localMarker else { return .bootMismatch }
+        guard let currentStart = readStartTime(processID) else { return .processUnavailable }
+        return currentStart == startTime ? nil : .processChanged
     }
 }
 
@@ -76,6 +87,7 @@ struct ConfidenceMediaRequest: Equatable {
     let revision: UInt64
     let presentation: ProjectionPresentation
     let process: LocalProjectionProcess?
+    var sourceIssue: LocalProjectionSourceIssue? = nil
 }
 
 enum EmptyRegionBehavior: String, Codable { case collapse, reserve }

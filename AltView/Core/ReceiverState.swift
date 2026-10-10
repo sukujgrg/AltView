@@ -33,13 +33,14 @@ struct ReceiverState {
         return lease
     }
     @discardableResult
-    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: DisplayContent, supportsProjection: Bool = false, localProcess: LocalProjectionProcess? = nil) -> Bool {
+    mutating func apply(connection: UUID, lease: UUID, revision: UInt64, content: DisplayContent, supportsProjection: Bool = false,
+                        localProcess: LocalProjectionProcess? = nil, sourceIssue: LocalProjectionSourceIssue? = nil) -> Bool {
         guard ownerConnection == connection, self.lease == lease, revision > self.revision, content.isValid else { return false }
         self.revision = revision
         self.content = content
         if supportsProjection, let projection = content.projection, projection.mode == .media {
             confidenceMedia = ConfidenceMediaRequest(connection: connection, lease: lease, revision: revision,
-                                                     presentation: projection, process: localProcess)
+                                                     presentation: projection, process: localProcess, sourceIssue: sourceIssue)
             confidenceContent = .empty
             return true
         }
@@ -47,6 +48,15 @@ struct ReceiverState {
         // Custom text shares its Audience fields; presenters provide an explicit
         // Confidence snapshot to retain their committed text through hidden navigation.
         confidenceContent = content.confidence ?? ConfidenceText(title: content.title, body: content.body, footer: content.footer)
+        return true
+    }
+    /// A local lookup can recover without a new presentation or revision. Keep
+    /// the accepted report and lease; never revive a released/replaced source.
+    mutating func refreshMediaSource(connection: UUID, process: LocalProjectionProcess?, sourceIssue: LocalProjectionSourceIssue?) -> Bool {
+        guard ownerConnection == connection, let media = confidenceMedia, media.connection == connection,
+              media.process != process || media.sourceIssue != sourceIssue else { return false }
+        confidenceMedia = ConfidenceMediaRequest(connection: media.connection, lease: media.lease, revision: media.revision,
+                                                presentation: media.presentation, process: process, sourceIssue: sourceIssue)
         return true
     }
     @discardableResult
