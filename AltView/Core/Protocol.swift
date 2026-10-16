@@ -14,7 +14,8 @@ enum AltViewProtocol {
     static let timeout: TimeInterval = 5
     static let confidenceText = "confidenceTextV1"
     static let localProjection = "localProjectionV1"
-    static let capabilities = [confidenceText, localProjection]
+    // Retired Confidence extensions are decoded for wire compatibility only.
+    static let capabilities: [String] = []
 }
 
 struct ConfidenceTranslation: Codable, Equatable, Sendable {

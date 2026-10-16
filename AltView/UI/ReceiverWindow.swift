@@ -8,7 +8,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     var onPresentationActivityChange: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
     var isPresenting: Bool {
-        output.isActive || confidence.output.isActive || receiverStatus.ownerID != nil || composer?.isPresenting == true
+        output.isActive || confidence.output.isActive || confidence.receiving || receiverStatus.ownerID != nil || composer?.isPresenting == true
     }
     private lazy var updateButton: NSButton = {
         let button = UI.button("Update Available", target: self, action: #selector(checkForUpdates))
@@ -37,7 +37,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let monitorAssignments: DisplayAssignments
     private lazy var output = OutputWindowController(presentation: presentation, displays: { [monitorAssignments] in monitorAssignments.currentDisplays() })
     private lazy var monitorControls = MonitorControls(role: .audience, assignments: monitorAssignments, output: output)
-    private lazy var confidence = ConfidenceViewController(defaults: defaults, assignments: monitorAssignments)
+    private lazy var confidence = EucalyMediaViewController(defaults: defaults, assignments: monitorAssignments)
     private lazy var preview: OutputCanvas = {
         let canvas = OutputCanvas(presentation: presentation)
         canvas.onVisible = { [weak self] in self?.refreshFitStatus() }
@@ -281,7 +281,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         UI.fill(designContent, in: designPage, padding: 0)
         let designItem = NSTabViewItem(identifier: "design"); designItem.view = designPage; designItem.label = "Audience Design"
         pages.addTabViewItem(receiverItem); pages.addTabViewItem(designItem)
-        let confidenceItem = NSTabViewItem(identifier: "confidence"); confidenceItem.label = "Confidence"
+        let confidenceItem = NSTabViewItem(identifier: "confidence"); confidenceItem.label = "eucaly Media"
         confidence.view.frame = pages.contentRect
         confidenceItem.view = confidence.view; pages.addTabViewItem(confidenceItem)
         let connectionsPage = NSView(frame: pages.contentRect)
@@ -317,7 +317,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         connectionBody.alignment = .top; connectionBody.spacing = 20
         senderCard.widthAnchor.constraint(equalTo: connectionBody.widthAnchor, constant: -480).isActive = true
         let connections = UI.column(
-            UI.pageHeading("Connections", subtitle: "Connect your sending apps once for Audience and Confidence."),
+            UI.pageHeading("Connections", subtitle: "Connect sending apps for Audience text. Configure SRT separately in eucaly Media."),
             connectionBody, NSView(), spacing: 20)
         connections.distribution = .fill
         UI.fill(connections, in: connectionsPage, padding: 0)
@@ -374,7 +374,6 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             senderListEmpty.stringValue = senderRows.isEmpty ? "No senders connected"
                 : "\(status.connections) connected" + (disconnectedCount > 0 ? " · \(disconnectedCount) disconnected" : "")
         }
-        confidence.update(status)
         onPresentationActivityChange?()
         starting = status.starting
         let receiving = status.listening || status.starting
@@ -448,7 +447,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private func updateNavigation() {
         navigationGroups = [WorkspaceDestination("Outputs", children: [
             WorkspaceDestination("Audience", id: "receiver", symbol: "tv"),
-            WorkspaceDestination("Confidence", id: "confidence", symbol: "text.below.photo")])]
+            WorkspaceDestination("eucaly Media", id: "confidence", symbol: "text.below.photo")])]
         if customTextEnabled {
             navigationGroups.append(WorkspaceDestination("Content", children: [
                 WorkspaceDestination("Text", id: "write", symbol: "text.alignleft")]))

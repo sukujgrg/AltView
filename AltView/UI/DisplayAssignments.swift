@@ -3,7 +3,7 @@ import ColorSync
 
 enum DisplayRole: String, CaseIterable {
     case audience, confidence
-    var title: String { rawValue.capitalized }
+    var title: String { self == .audience ? "Audience" : "eucaly Media" }
     var legacyKey: String { self == .audience ? "outputDisplayID" : "confidenceDisplayID" }
     var preferenceKey: String { "\(rawValue)MonitorAssignment" }
     var other: Self { self == .audience ? .confidence : .audience }

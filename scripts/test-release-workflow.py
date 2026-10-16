@@ -52,7 +52,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.signing_team = "TEAM"
         self.signature_overrides = {}
         self.missing_arm_binary = None
-        self.main_architectures = "arm64 x86_64"
+        self.main_architectures = "arm64"
         self.private_repo = False
         self.missing_binary = None
         self.remote_tag = None
@@ -259,7 +259,7 @@ class ReleaseFlowTests(unittest.TestCase):
                 self.assertEqual(args[args.index("-configuration") + 1], "Release")
                 return json.dumps([{"target": "AltView", "buildSettings": {"DEVELOPMENT_TEAM": self.signing_team}}])
             if "archive" in args:
-                self.assertIn("ARCHS=arm64 x86_64", args)
+                self.assertIn("ARCHS=arm64", args)
                 self.assertIn("ONLY_ACTIVE_ARCH=NO", args)
                 self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
                 self.assertFalse(any(arg.startswith("MARKETING_VERSION=") for arg in args))
@@ -299,7 +299,7 @@ class ReleaseFlowTests(unittest.TestCase):
                 self.assertEqual(Path(args[1]).name, "AltView")
                 return self.main_architectures
             self.assertEqual(args[-2], "-verify_arch")
-            self.assertIn(args[-1], ("arm64", "x86_64"))
+            self.assertEqual(args[-1], "arm64")
             if Path(args[1]).name == self.missing_arm_binary:
                 raise subprocess.CalledProcessError(1, args)
             return
@@ -1055,7 +1055,7 @@ class ReleaseFlowTests(unittest.TestCase):
             self.invoke(no_publish=True)
         self.assertEqual(self.archive_count(), 0)
 
-    def test_every_shipped_binary_must_be_universal(self):
+    def test_every_shipped_binary_must_support_arm64(self):
         for name in ("AltView", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
             with self.subTest(binary=name):
                 self.missing_arm_binary = name
@@ -1064,11 +1064,11 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
         self.assert_not_published()
 
-    def test_main_executable_must_be_universal(self):
-        for architectures in ("x86_64", "arm64", "arm64 x86_64 i386"):
+    def test_main_executable_must_be_arm64_only(self):
+        for architectures in ("x86_64", "arm64 x86_64", "arm64 x86_64 i386"):
             with self.subTest(architectures=architectures):
                 self.main_architectures = architectures
-                with self.assertRaisesRegex(release.ReleaseError, "both arm64 and x86_64"):
+                with self.assertRaisesRegex(release.ReleaseError, "arm64 only"):
                     self.invoke(no_publish=True)
         self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
         self.assert_not_published()
@@ -1191,11 +1191,10 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.archive_count(), 0)
         self.assert_not_published()
 
-    def test_intel_helper_signatures_are_checked(self):
+    def test_retained_intel_helper_slices_are_not_required_for_arm64_release(self):
         self.signature_overrides[("Installer", "x86_64")] = {"team": "OTHERTEAM"}
-        with self.assertRaisesRegex(release.ReleaseError, "Signing team differs.*x86_64"):
-            self.invoke(no_publish=True)
-        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
 
     def test_previous_feed_is_verified_and_build_number_advances(self):
         self.latest = "v4.0.0"

@@ -1,3 +1,14 @@
+# Current media validation
+
+Current builds require Apple Silicon. Intel-specific and Confidence entries below are historical. The current output is eucaly Media;
+its clock and same-Mac capture UI are removed. Follow [media setup](media.md) and
+rehearse live video with audio, static images, pause/seek, Stop, Ethernet loss,
+reconnect, wrong passphrase and HDMI device removal. Verify background music is
+absent by default and only included when explicitly enabled in eucaly. Confirm
+Preview audio never reaches ATEM, in-house resolution stays unchanged, and
+Audience text remains independently usable. Measure end-to-end delay and audio
+sync with the production’s 50/60 Hz format.
+
 ## Login Keychain pairing recovery — 11 October 2026
 
 Receiver and Custom Text pairings retain accessible data-protection items and use login Keychain when reads find no protected item or lack its entitlement. Saves fall back only for the missing-entitlement error. Locked, denied and malformed items remain visible. The receiver preserves unreadable saved entries and explains its temporary session code; Custom Text reports read/save failures while allowing typed-code recovery and session pairing reuse. Secrets remain in Keychain or memory, and queries suppress authentication interaction.

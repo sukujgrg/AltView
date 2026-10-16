@@ -1,5 +1,13 @@
 # AltView protocol v2 and implementation boundaries
 
+## Separate SRT media output
+
+The current receiver has independent Audience text and eucaly Media outputs.
+Media uses encrypted SRT H.264/AAC MPEG-TS, not the text framing or ownership
+protocol below. See [media setup and lifecycle](media.md). Confidence capabilities
+are no longer advertised; optional legacy fields still decode for compatibility.
+The historical Confidence sections at the end describe retired behaviour.
+
 ## Roles
 
 The receiver owns the display style, selected display, window lifecycle, and active sender lease. A sender supplies a generic `DisplayContent` snapshot containing `title`, `body`, `footer`, and `visible`, with optional `emptyRegions` spacing and `template` layout preferences. `body` and `visible` are required; omitted or null title/footer values become empty strings. Content is plain text; no markup, file paths, media, HTML, or remote commands.
@@ -235,7 +243,7 @@ A Show Text click made before the local connection is ready freezes that request
 The This Mac preview uses the receiver's shared `CanvasPresentation`; another Mac shows only the last submitted text, clearly labelled. The protocol does not stream back remote pixels or remote style. Reopening restores a private draft with This Mac selected, without starting a presentation.
 
 
-## Confidence snapshots
+## Retired Confidence snapshots (legacy wire compatibility)
 
 The sender advertises `hello.capabilities`. The receiver returns their intersection with its supported IDs in `welcome.capabilities`. Negotiation is per authenticated connection and reset on reconnect. The receiver advertises `confidenceTextV1` for presenter integrations, but the current ViewTheWord and AltView senders always preserve the complete Confidence object. There is no separate secondary-translation capability or older-receiver downgrade. Ownership, acknowledgements and template discovery retain their existing contract.
 
@@ -259,7 +267,7 @@ Senders validate the complete escaped Confidence frame after resolving templates
 
 When ready, the existing Bonjour listener also advertises its actual assigned `port` and a public `localMarker`, a SHA-256 namespaced hash of `kern.bootsessionuuid`. The marker is only a same-Mac discovery hint, never an authentication credential. If the marker matches the sending process’s current boot and the record has a valid receiver UUID and port, sender discovery offers **This Mac · receiver name** and routes the unchanged TLS protocol to `127.0.0.1:advertisedPort`. Local destinations store the stable receiver UUID as their pairing identity; their saved port is refreshed by discovery during setup and reconnect, even with Settings closed. A stopped/cancelled sender cannot restart from delayed discovery. Remote receivers continue to use their Bonjour service endpoints. Missing/nonmatching metadata remains ordinary LAN discovery; manual loopback connections use the actual port shown in AltView Settings. The receiver remains a LAN listener: selecting loopback changes the client destination, not listener access.
 
-## Local projection extension (optional v2 capability)
+## Retired local projection extension (legacy wire compatibility)
 
 `localProjectionV1` is negotiated alongside `confidenceTextV1`. It adds optional fields to existing messages; it creates no message kind, media transport, playback service or new ownership channel. Old peers ignore unknown JSON keys, and senders omit `content.projection` unless negotiated. Audience text, templates, leases and acknowledgement semantics remain unchanged. ViewTheWord is unchanged.
 

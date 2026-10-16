@@ -141,7 +141,7 @@ final class DisplayAssignmentTests: XCTestCase {
         let output = output(.confidence, inventory: inventory)
         defer { output.stop() }
         output.show(target: a.target)
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView Confidence" && $0.isVisible })
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView eucaly Media" && $0.isVisible })
         inventory.displays = [monitor(mirrored: true)]
         NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
         XCTAssertEqual(output.readiness, .unavailable)
@@ -167,7 +167,7 @@ final class DisplayAssignmentTests: XCTestCase {
         let occupied = try XCTUnwrap(cPicker.item(withTitle: "1 · Studio Display · Audience"))
         XCTAssertFalse(occupied.isEnabled)
         XCTAssertTrue(assignments.select(b.target, for: .confidence))
-        XCTAssertFalse(try XCTUnwrap(aPicker.item(withTitle: "2 · Studio Display · Confidence")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(aPicker.item(withTitle: "2 · Studio Display · eucaly Media")).isEnabled)
         XCTAssertEqual(cPicker.titleOfSelectedItem, "2 · Studio Display")
         cPicker.selectItem(at: 0); cPicker.sendAction(cPicker.action, to: cPicker.target)
         XCTAssertTrue(try XCTUnwrap(aPicker.item(withTitle: "2 · Studio Display")).isEnabled)

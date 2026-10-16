@@ -93,7 +93,7 @@ final class WindowTests: XCTestCase {
                 window.appearance = NSAppearance(named: appearance)
                 for ratio in PreviewAspectRatio.allCases {
                     var frames: [(stage: NSRect, canvas: NSRect)] = []
-                    for role in ["Audience", "Confidence"] {
+                    for role in ["Audience", "eucaly Media"] {
                         if role == "Audience" { controller.showReceiverPage() } else { controller.showConfidencePage() }
                         let picker = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first)
                         picker.selectItem(withTitle: ratio.rawValue); picker.sendAction(picker.action, to: picker.target)
@@ -156,10 +156,10 @@ final class WindowTests: XCTestCase {
             XCTAssertNil(defaults.string(forKey: "confidencePreviewAspectRatio"))
         }
         controller.showConfidencePage()
-        let confidence = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first { $0.accessibilityLabel() == "Confidence preview aspect ratio" })
+        let confidence = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first { $0.accessibilityLabel() == "eucaly Media preview aspect ratio" })
         XCTAssertEqual(confidence.itemTitles, ["16:9", "16:10", "4:3"])
         XCTAssertEqual(confidence.titleOfSelectedItem, "16:9")
-        let confidenceCanvas = try XCTUnwrap(descendants(root).compactMap { $0 as? ConfidenceCanvas }.first)
+        let confidenceCanvas = try XCTUnwrap(descendants(root).compactMap { $0 as? EucalyMediaCanvas }.first)
         for ratio in PreviewAspectRatio.allCases {
             confidence.selectItem(withTitle: ratio.rawValue)
             confidence.sendAction(confidence.action, to: confidence.target)
@@ -973,7 +973,7 @@ final class WindowTests: XCTestCase {
         let root = try XCTUnwrap(controller.window?.contentView)
         root.layoutSubtreeIfNeeded()
         let navigation = try sidebar(in: root)
-        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "Confidence", "Setup", "Connections"])
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "eucaly Media", "Setup", "Connections"])
         XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
         eventually("ready without a click") { controller.receiverStatus.listening }
         XCTAssertNil(controller.receiverStatus.ownerName)
@@ -1018,7 +1018,7 @@ final class WindowTests: XCTestCase {
         let navigation = try sidebar(in: root)
         eventually("receiver ready with Custom Text disabled") { controller.receiverStatus.listening }
         XCTAssertFalse(controller.customTextEnabled, "An existing saved draft must not opt the user in")
-        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "Confidence", "Setup", "Connections"])
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "eucaly Media", "Setup", "Connections"])
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.allSatisfy { $0.accessibilityLabel() != "Text title" })
 
@@ -1085,7 +1085,7 @@ final class WindowTests: XCTestCase {
         let navigation = try sidebar(in: root)
         XCTAssertFalse(descendants(root).compactMap { $0 as? NSSegmentedControl }.contains { $0.accessibilityLabel() == "AltView workspace" })
         controller.showConfidencePage()
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Confidence")
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Media")
         let connections = try settingsContent(in: controller)
         XCTAssertEqual(selectedSidebarTitle(navigation), "Connections")
         let status = try XCTUnwrap(descendants(connections).compactMap { $0 as? NSTextField }.first { $0.accessibilityIdentifier() == "receiverPairingStatus" })
@@ -1183,7 +1183,7 @@ final class WindowTests: XCTestCase {
         XCTAssertTrue(controller.receiverStatus.listening)
         XCTAssertEqual(controller.receiverStatus.content, .empty)
         let navigation = try sidebar(in: root)
-        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "Confidence", "Setup", "Connections"])
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "eucaly Media", "Setup", "Connections"])
         XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
         XCTAssertFalse(defaults.bool(forKey: "customTextEnabled"))
         controller.showComposerPage()

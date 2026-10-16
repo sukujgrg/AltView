@@ -40,19 +40,19 @@ jobs:
           xcodebuild -project AltView.xcodeproj -scheme AltView
           -configuration Release -derivedDataPath build/DerivedData
           CODE_SIGNING_ALLOWED=NO build
-      - name: Verify universal release and built metadata
+      - name: Verify Apple Silicon release and built metadata
         run: |
           python3 - <<'PY'
           import plistlib
           import sys
           from pathlib import Path
           sys.path.insert(0, "scripts")
-          from release import verify_universal_app
+          from release import verify_arm64_app
           version = Path("VERSION").read_text().strip()
           for configuration in ("Debug", "Release"):
               app = Path("build/DerivedData/Build/Products") / configuration / "AltView.app"
               if configuration == "Release":
-                  verify_universal_app(app)
+                  verify_arm64_app(app)
               info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
               assert info["CFBundleShortVersionString"] == version
               assert info["LSMinimumSystemVersion"] == "12.0"
