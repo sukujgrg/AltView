@@ -349,7 +349,7 @@ def next_build_number(previous):
     return str(build)
 
 
-def verify_universal_app(app):
+def verify_arm64_app(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     framework = app / "Contents/Frameworks/Sparkle.framework"
     binaries = [app / "Contents/MacOS" / info["CFBundleExecutable"]]
@@ -360,10 +360,10 @@ def verify_universal_app(app):
     for binary in binaries:
         if not binary.is_file() or not binary.resolve().is_relative_to(app.resolve()):
             raise ReleaseError(f"Required executable is missing or outside the app: {binary}")
-        for arch in ("arm64", "x86_64"):
-            run("lipo", binary, "-verify_arch", arch)
-    if set(run("lipo", binaries[0], "-archs", capture=True).split()) != {"arm64", "x86_64"}:
-        raise ReleaseError("AltView must be built for both arm64 and x86_64.")
+        run("lipo", binary, "-verify_arch", "arm64")
+    # Prebuilt framework helpers may retain Intel slices. The app is arm64 only.
+    if run("lipo", binaries[0], "-archs", capture=True).split() != ["arm64"]:
+        raise ReleaseError("AltView must be built for arm64 only.")
     return binaries
 
 
@@ -392,10 +392,10 @@ def verify_app(app, state, team):
         raise ReleaseError("AltView requires Sparkle's installer service and uses its existing network client access.")
     if info.get("LSMinimumSystemVersion") != "12.0":
         raise ReleaseError("AltView releases must retain macOS 12 support.")
-    binaries = verify_universal_app(app)
+    binaries = verify_arm64_app(app)
     run("codesign", "--verify", "--deep", "--strict", app)
     for binary in binaries:
-        for arch in ("arm64", "x86_64"):
+        for arch in ("arm64",):
             details = run("codesign", "-dv", "--verbose=4", "--arch", arch, binary,
                           capture=True, include_stderr=True)
             flags = re.search(r"\bflags=0x([0-9a-fA-F]+)\b", details)
@@ -532,7 +532,7 @@ def prepare(directory, state, args):
             source_commit(state["commit"])
             run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
                 "-derivedDataPath", derived, "-archivePath", archive, "archive",
-                "ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
+                "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
                 "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=YES",
                 f"CURRENT_PROJECT_VERSION={state['build']}", f"ALTVIEW_SOURCE_COMMIT={state['commit']}")
             source_commit(state["commit"])

@@ -1,8 +1,24 @@
 import Foundation
 import Darwin
 
+/// Sent only inside the authenticated control channel. Never publish in DNS-SD
+/// or saved output configuration. The address comes from this TLS peer's path.
+struct MediaOffer: Codable, Equatable, Sendable {
+    let receiverID: UUID
+    let port: Int
+    let ready: Bool
+    let passphrase: String
+    var host: String?
+    var isValid: Bool {
+        (host == nil || (host?.isEmpty == false && (host?.utf8.count ?? 254) <= 253
+            && host?.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-".contains($0)) } == true))
+            && (1...65535).contains(port) && (10...79).contains(passphrase.utf8.count)
+            && passphrase.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_".contains($0)) }
+    }
+}
+
 enum AltViewProtocol {
-    static let version = 2
+    static let version = 3
     static let serviceType = "_altview._tcp"
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
@@ -13,8 +29,10 @@ enum AltViewProtocol {
     static let connectionAttemptTimeout: TimeInterval = 10
     static let timeout: TimeInterval = 5
     static let confidenceText = "confidenceTextV1"
+    static let mediaProvisioning = "mediaProvisioningV1"
     static let localProjection = "localProjectionV1"
-    static let capabilities = [confidenceText, localProjection]
+    // Retired Confidence extensions are decoded for wire compatibility only.
+    static let capabilities: [String] = [mediaProvisioning]
 }
 
 struct ConfidenceTranslation: Codable, Equatable, Sendable {
@@ -235,6 +253,7 @@ struct WireMessage: Codable, Equatable {
     var templatePolicy: TemplatePolicy?
     var capabilities: [String]?
     var localProcess: LocalProjectionProcess?
+    var media: MediaOffer?
 }
 
 enum ProtocolFailure: Error, LocalizedError {
@@ -309,12 +328,12 @@ enum OutputReadiness: String, Codable, Sendable {
 
     var summary: String {
         switch self {
-        case .closed: return "Audience window closed"
-        case .ready: return "Audience window open"
+        case .closed: return "eucaly Lyrics window closed"
+        case .ready: return "eucaly Lyrics window open"
         case .preview: return "Preview window only"
-        case .displayMissing: return "Audience display disconnected"
-        case .minimized: return "Audience window minimized"
-        case .unavailable: return "Audience unavailable — check display and artwork in AltView"
+        case .displayMissing: return "eucaly Lyrics display disconnected"
+        case .minimized: return "eucaly Lyrics window minimized"
+        case .unavailable: return "eucaly Lyrics unavailable — check display and artwork in AltView"
         case .asleep: return "Receiver display asleep"
         }
     }

@@ -7,7 +7,7 @@ NOTES_FILE ?=
 
 help:
 	@printf '%s\n' \
-	  'make build             Build a universal Mac app into ~/Applications' \
+	  'make build             Build an Apple Silicon Mac app into ~/Applications' \
 	  'make release           Validate, sign, notarize, tag, and publish from this Mac' \
 	  'make release-check     Check source, destination, and CI only' \
 	  'make release-notarize  Produce signed local artifacts without publishing' \

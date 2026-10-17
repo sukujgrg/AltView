@@ -96,7 +96,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
     private var connectionProgress: NSProgressIndicator?
     private var localOwnerName: String?
     private var localOutputNotice = ""
-    private var localDisplayStatus = "Audience window closed"
+    private var localDisplayStatus = "eucaly Lyrics window closed"
 
     init(defaults: UserDefaults = .standard, localReceiverID: UUID? = nil,
          loadPairing: @escaping (String) throws -> Data? = KeyStore.read,
@@ -186,8 +186,8 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             UI.row(UI.label("MESSAGE PREVIEW", size: 11, color: .secondaryLabelColor, bold: true), NSView(),
                    UI.label("16:9", size: 11, color: .secondaryLabelColor)),
             canvas, previewNote,
-            UI.row(UI.button("Edit Audience Design", target: self, action: #selector(openDesign)),
-                   UI.button("Open Audience Controls", target: self, action: #selector(openReceiver)), NSView()), spacing: 12)
+            UI.row(UI.button("Edit eucaly Lyrics Design", target: self, action: #selector(openDesign)),
+                   UI.button("Open eucaly Lyrics Controls", target: self, action: #selector(openReceiver)), NSView()), spacing: 12)
         let sentText = UI.scrolling(UI.column(remoteHeading, remoteBody, remoteFooter, spacing: 14))
         sentText.setAccessibilityLabel("Last text sent")
         remotePreview = UI.column(UI.label("Last text sent", size: 13, bold: true), sentText,
@@ -290,7 +290,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         destinationName.isHidden = !remote
         destinationName.toolTip = destinationName.stringValue
         destinationHint.stringValue = remote ? (connectionNote.isEmpty ? "Text and your template choice are sent. The receiving Mac controls the final design." : connectionNote)
-            : "Publishes your text and Design changes together. Open Audience to choose this Mac’s display."
+            : "Publishes your text and Design changes together. Open eucaly Lyrics to choose this Mac’s display."
         destinationHint.toolTip = destinationHint.stringValue
         showButton.title = session.pending != nil ? "Connecting…" : session.takingOutput ? "Showing…" : (remote && !status.connected ? "Connect & Publish Text…" : session.primaryTitle)
         if !remote {
@@ -332,7 +332,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         } else if status.ownsOutput {
             statusLabel.stringValue = session.isVisible ? "Published to \(destination)" : "Text hidden on \(destination)"
             statusDetail.stringValue = !session.isVisible ? "Show Last Text restores your last publication. Publish sends your current edits."
-                : !remote ? "\(localDisplayStatus).\(localDisplayStatus == "Audience window closed" ? " Open Audience Controls to show it on a display." : "")"
+                : !remote ? "\(localDisplayStatus).\(localDisplayStatus == "eucaly Lyrics window closed" ? " Open eucaly Lyrics Controls to show it on a display." : "")"
                 : unpublished ? "Your new edits have not been sent. The receiving Mac still has your last publication."
                 : "Your message matches the last text sent."
         } else if remote && activeConnectionID != nil && !status.connected {
@@ -486,7 +486,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         if portField.constraints.isEmpty { portField.widthAnchor.constraint(equalToConstant: 75).isActive = true }
         codeField.delegate = self
         codeField.stringValue = ""
-        pairingHint.stringValue = "On the other Mac, click the gear in AltView to find its 8-character code in Settings. Leave blank to use a saved pairing."
+        pairingHint.stringValue = "On the other Mac, open Connections in AltView to find its 8-character code. Leave blank to use a saved pairing."
         connectionStatusLabel.stringValue = session.canShow
             ? "Connect & Publish Text publishes your draft and replaces any current source. Connect Only keeps your draft private."
             : "Connecting keeps the output unchanged. Write your message, then choose Publish Text."
@@ -495,7 +495,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 610, height: 470), styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "Connect to a Receiving Mac"; panel.isReleasedWhenClosed = false
         let manual = UI.column(UI.row(UI.label("Address"), hostField),
-            UI.row(UI.label("Port"), portField, UI.label("Shown in the receiving Mac’s AltView Settings.", size: 11, color: .secondaryLabelColor)), spacing: 8)
+            UI.row(UI.label("Port"), portField, UI.label("Shown in Connections on the receiving Mac.", size: 11, color: .secondaryLabelColor)), spacing: 8)
         manualFields = manual; manual.isHidden = manualToggle.state == .off
         let refresh = UI.button("Refresh", target: self, action: #selector(findReceivers)); refreshButton = refresh
         let connect = UI.button(session.canShow ? "Connect & Publish Text" : "Connect", target: self, action: #selector(connectAndShow))
@@ -572,7 +572,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
             let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty else { showConnectionError("Enter the receiving Mac’s address.", field: hostField); return }
             guard let port = UInt16(portField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), port > 0 else {
-                showConnectionError("Enter the current port shown in AltView Settings on the receiving Mac (1–65535).", field: portField); return
+                showConnectionError("Enter the current port shown in Connections on the receiving Mac (1–65535).", field: portField); return
             }
             endpoint = .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
             account = "sender.\(host):\(port)"; name = host
@@ -601,7 +601,7 @@ final class TextComposerViewController: NSViewController, NSTextFieldDelegate, N
                 } catch {
                     throw ComposerConnectionError(message: "Saved pairing could not be read from Keychain. Unlock Keychain and try again, or enter the receiving Mac’s code. \(error.localizedDescription)")
                 }
-                throw ComposerConnectionError(message: "No saved pairing for this Mac. Enter the code in AltView’s Settings (gear icon) on that Mac.")
+                throw ComposerConnectionError(message: "No saved pairing for this Mac. Enter the code shown in Connections in AltView on that Mac.")
             }
             DispatchQueue.main.async {
                 guard let self, self.connectionRevision == revision, self.connectionSheet != nil else { return }

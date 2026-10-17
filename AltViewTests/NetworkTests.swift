@@ -4,6 +4,35 @@ import Darwin
 @testable import AltView
 
 final class NetworkTests: XCTestCase {
+    func testOnlyNegotiatedAuthenticatedMediaPeersReceiveTheCredentialWithoutTakingText() throws {
+        let key = try PairingKey.generate(), id = UUID()
+        var status = ReceiverStatus(), observerMessages: [WireMessage] = [], mediaMessages: [WireMessage] = []
+        let server = ReceiverServer(receiverID: id) { status = $0 }
+        let secret = "0123456789abcdef0123456789abcdef"
+        server.updateMediaOffer(.init(receiverID: id, port: 12000, ready: false, passphrase: secret))
+        server.start(name: "Receiver setup", key: key, advertise: false)
+        eventually("listener bound") { status.listening }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(status.port))!)
+        let observer = PeerChannel(connection: NWConnection(to: endpoint, using: SecureConnection.parameters(key: key)), queue: .main)
+        let media = PeerChannel(connection: NWConnection(to: endpoint, using: SecureConnection.parameters(key: key)), queue: .main)
+        observer.onReady = { [weak observer] in observer?.send(.init(kind: .hello, senderID: UUID(), name: "Scripture", capabilities: [])) }
+        media.onReady = { [weak media] in media?.send(.init(kind: .hello, senderID: UUID(), name: "eucaly", capabilities: [AltViewProtocol.mediaProvisioning])) }
+        observer.onMessage = { observerMessages.append($0) }
+        media.onMessage = { mediaMessages.append($0) }
+        defer { observer.close(nil); media.close(nil); server.stop() }
+        observer.start(); media.start()
+        eventually("both welcomed") { observerMessages.contains { $0.kind == .welcome } && mediaMessages.contains { $0.kind == .welcome } }
+        XCTAssertTrue(observerMessages.allSatisfy { $0.media == nil }, "Text-only senders must not receive the Media secret")
+        let offer = try XCTUnwrap(mediaMessages.first { $0.kind == .welcome }?.media)
+        XCTAssertEqual(offer.receiverID, id); XCTAssertEqual(offer.passphrase, secret)
+        XCTAssertEqual(offer.host, "127.0.0.1"); XCTAssertFalse(offer.ready)
+        XCTAssertNil(status.ownerID); XCTAssertEqual(status.content, .empty)
+        server.updateMediaOffer(.init(receiverID: id, port: 13000, ready: true, passphrase: secret))
+        eventually("ready endpoint feedback") { mediaMessages.contains { $0.media?.ready == true && $0.media?.port == 13000 } }
+        XCTAssertTrue(observerMessages.allSatisfy { $0.media == nil })
+        XCTAssertNil(status.ownerID)
+    }
+
     private final class ListenerProbe {
         private let lock = NSLock()
         private var listeners: [NWListener] = []
@@ -46,44 +75,32 @@ final class NetworkTests: XCTestCase {
         XCTAssertFalse(ReceiverServer.isLoopback(.hostPort(host: remoteMapped, port: 49721)))
         XCTAssertFalse(ReceiverServer.isLoopback(.service(name: "Local", type: AltViewProtocol.serviceType, domain: "local.", interface: nil)))
     }
-    func testLocalMediaRecoversProcessLookupOnHeartbeatWithoutRepublishing() throws {
+    func testRetiredConfidenceCapabilitiesAreNotNegotiatedOrCaptured() throws {
         let key = try PairingKey.generate(), process = try XCTUnwrap(LocalProjectionProcess.current)
-        let probe = ProcessLookupProbe()
         var output = ReceiverStatus()
-        let server = ReceiverServer(receiverID: UUID(), verifyLocalProcess: { $0.sourceIssue(readStartTime: probe.read) }) { output = $0 }
-        server.start(name: "Local verification recovery", key: key, advertise: false)
+        let server = ReceiverServer(receiverID: UUID()) { output = $0 }
+        server.start(name: "Legacy sender", key: key, advertise: false)
         eventually("listener ready") { output.listening }
-        let queue = DispatchQueue(label: "local-media-test-peer")
+        let queue = DispatchQueue(label: "legacy-confidence-test-peer")
         let peer = PeerChannel(connection: NWConnection(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(output.port))!),
                                                        using: SecureConnection.parameters(key: key)), queue: queue)
         let presentation = ProjectionPresentation(sessionID: UUID(), mode: .media, windowID: 77, windowGeneration: UUID())
-        peer.onReady = { [weak peer] in peer?.send(.init(kind: .hello, senderID: UUID(), name: "Eucaly", capabilities: AltViewProtocol.capabilities, localProcess: process)) }
+        peer.onReady = { [weak peer] in peer?.send(.init(kind: .hello, senderID: UUID(), name: "Eucaly", capabilities: [AltViewProtocol.localProjection, AltViewProtocol.confidenceText], localProcess: process)) }
         peer.onMessage = { [weak peer] message in
             guard let peer else { return }
             if message.kind == .welcome { peer.send(.init(kind: .take)) }
             if message.kind == .granted, let lease = message.lease {
-                peer.send(.init(kind: .state, lease: lease, revision: 1, content: .init(visible: false, projection: presentation)))
+                peer.send(.init(kind: .state, lease: lease, revision: 1, content: .init(body: "legacy sentinel", visible: false, projection: presentation)))
             }
         }
         defer { queue.async { peer.close(nil) }; server.stop() }
         queue.async { peer.start() }
-        eventually("accepted media explains local lookup failure") { output.confidenceMedia?.sourceIssue == .processUnavailable }
-        let accepted = try XCTUnwrap(output.confidenceMedia)
-        XCTAssertNil(accepted.process); XCTAssertEqual(output.confidenceContent, .empty)
-        probe.recover()
-        queue.async { peer.send(.init(kind: .heartbeat)) }
-        eventually("same accepted media gains a verified local source") { output.confidenceMedia?.process == process }
-        let recovered = try XCTUnwrap(output.confidenceMedia)
-        XCTAssertNil(recovered.sourceIssue)
-        XCTAssertEqual(recovered.connection, accepted.connection); XCTAssertEqual(recovered.lease, accepted.lease)
-        XCTAssertEqual(recovered.revision, 1); XCTAssertEqual(recovered.presentation, presentation)
-        server.clearOutput()
-        eventually("Clear removes media") { output.confidenceMedia == nil }
-        queue.async { peer.send(.init(kind: .heartbeat)) }
-        let settled = expectation(description: "late verification cannot restore cleared media")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settled.fulfill() }
-        wait(for: [settled], timeout: 2)
-        XCTAssertNil(output.confidenceMedia); XCTAssertNil(output.ownerID)
+        eventually("legacy snapshot accepted as ordinary text state") { output.content.body == "legacy sentinel" }
+        XCTAssertNil(output.confidenceMedia)
+        XCTAssertEqual(output.confidenceContent.body, "legacy sentinel") // ordinary legacy text fallback only
+        XCTAssertNil(output.confidenceContent.secondary)
+        XCTAssertFalse(output.content.visible)
+        XCTAssertEqual(AltViewProtocol.capabilities, [AltViewProtocol.mediaProvisioning])
     }
     func testWaitingReceiverPreservesListenerAndOwnershipUntilNetworkResumes() throws {
         let key = try PairingKey.generate(), probe = ListenerProbe()

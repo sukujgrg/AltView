@@ -1,5 +1,13 @@
 # AltView protocol v2 and implementation boundaries
 
+## Separate SRT media output
+
+The current receiver has independent **eucaly Lyrics** text (formerly Audience) and **eucaly Media** outputs. It opens on eucaly Media; the text listener still starts automatically. One receiver pairing provisions Media over authenticated control; see [receiver pairing](media.md#pairing-and-media-credentials). Below, Audience refers to the eucaly Lyrics text output; Confidence sections describe the retired implementation.
+Media uses encrypted SRT H.264/AAC MPEG-TS, not the text framing or ownership
+protocol below. See [media setup and lifecycle](media.md). Confidence capabilities
+are no longer advertised; optional legacy fields still decode for compatibility.
+The historical Confidence sections at the end describe retired behaviour.
+
 ## Roles
 
 The receiver owns the display style, selected display, window lifecycle, and active sender lease. A sender supplies a generic `DisplayContent` snapshot containing `title`, `body`, `footer`, and `visible`, with optional `emptyRegions` spacing and `template` layout preferences. `body` and `visible` are required; omitted or null title/footer values become empty strings. Content is plain text; no markup, file paths, media, HTML, or remote commands.
@@ -21,29 +29,57 @@ Compose is an optional built-in sender for custom text and standalone validation
 
 ## Discovery and pairing
 
-The receiver advertises Bonjour service type `_altview._tcp` while receiving is active, using the receiver name, listening port, and a public `receiverID` UUID in its TXT record. Discovery requests TXT records and excludes the local receiver by UUID; no secret is included in discovery metadata. AltView requests an automatically allocated port (`0`) from macOS and advertises the assigned port. Senders must retain the Bonjour service endpoint and resolve it for each connection instead of pinning the resolved port or assuming the old fixed port 49721. `ReceiverDiscovery` uses `NWBrowser`, and the sender connects directly to the selected service endpoint. A manual host/port endpoint is also accepted; the current port is shown in receiver Settings and may change after Pause/Resume or restart. Existing saved manual endpoints need updating when the port changes; their credentials may need re-entering because manual pairing storage is keyed by host and port. No fixed-port setting is exposed to users. Most network tests disable advertising; dedicated Bonjour tests cover discovery and reconnecting after a port change. Discovery is local, with no central server or cloud account.
+The receiver advertises Bonjour service type `_altview._tcp` while receiving is active, using the receiver name, listening port, and a public `receiverID` UUID in its TXT record. Discovery requests TXT records and excludes the local receiver by UUID; no secret is included in discovery metadata. AltView requests an automatically allocated port (`0`) from macOS and advertises the assigned port. Senders must retain the Bonjour service endpoint and resolve it for each connection instead of pinning the resolved port or assuming the old fixed port 49721. `ReceiverDiscovery` uses `NWBrowser`, and the sender connects directly to the selected service endpoint. A manual host/port endpoint is also accepted; the current port is shown in Connections and may change after Pause/Resume or restart. Existing saved manual endpoints need updating when the port changes; their credentials may need re-entering because manual pairing storage is keyed by host and port. No fixed-port setting is exposed to users. Most network tests disable advertising; dedicated Bonjour tests cover discovery and reconnecting after a port change. Discovery is local, with no central server or cloud account.
 
-Pairing uses an 8-character code, visible and selectable on the Receiver page with a Copy Code button. Each character is chosen uniformly with `SecRandomCopyBytes` from `23456789ABCDEFGHJKLMNPQRSTUVWXYZ`, giving 40 bits of randomness. Senders may type or paste the code; parsing ignores whitespace and hyphens and accepts lowercase ASCII letters. The normalized eight uppercase ASCII bytes are the pre-shared key. Previous 64-character codes and 32-byte keys are not accepted; update both Macs and pair again with the displayed code. The receiver never advertises this secret. Both ends use Network.framework TLS with a pre-shared key, identity `AltView-v1`, TLS 1.2, and `TLS_PSK_WITH_AES_128_GCM_SHA256`. The secret is proved through the TLS handshake rather than transmitted as a JSON token. All trusted senders for this receiver share the secret and may explicitly take output.
+Pairing uses an 8-character code, visible and selectable on the Connections page with a Copy Code button. Each character is chosen uniformly with `SecRandomCopyBytes` from `23456789ABCDEFGHJKLMNPQRSTUVWXYZ`, giving 40 bits of randomness. Senders may type or paste the code; parsing ignores whitespace and hyphens and accepts lowercase ASCII letters. The normalized eight uppercase ASCII bytes are the pre-shared key. Previous 64-character codes and 32-byte keys are not accepted; update both Macs and pair again with the displayed code. The receiver never advertises this secret. Both ends use Network.framework TLS with a pre-shared key, identity `AltView-v3`, TLS 1.2, and `TLS_PSK_WITH_AES_128_GCM_SHA256`. The secret is proved through the TLS handshake rather than transmitted as a JSON token. All trusted senders for this receiver share the secret and may explicitly take output.
 
 The short code has less entropy than the previous 256-bit secret. This PSK cipher does not provide forward secrecy or protect short secrets against offline guessing from a captured handshake ([RFC 4279, section 7.2](https://www.rfc-editor.org/rfc/rfc4279.html#section-7.2)). This version is intended for a trusted local production network, not Internet exposure.
 
-Secrets prefer Apple's data-protection Keychain under service `com.suku.AltView.pairing`, with account `receiver` for the receiver code and the existing `sender.<host>:<port>` / `sender.service.<name>` accounts for Custom Text. Reads check the encrypted login Keychain when the protected item is absent or its required entitlement is missing. Saves fall back only for `errSecMissingEntitlement`, retaining the login Keychain's default app-signature access controls; other errors remain visible. All stored codes are validated as eight-character pairing keys. Background operations suppress authentication interaction. An unreadable or malformed receiver item is preserved for recovery or an explicit Reset Code, while a temporary in-memory code allows receiving during the session. Read/save failures explain recovery and restart consequences. A successful remote connection remembers its key and receiver UUID for the session and attempts to save the key to Keychain; only the public receiver UUID goes into preferences. No fallback writes a secret to UserDefaults or disk.
+Secrets prefer Apple's data-protection Keychain under service `com.suku.AltView.pairing`, with account `receiver` for the receiver code and the existing `sender.<host>:<port>` / `sender.service.<name>` accounts for Custom Text. Reads check the encrypted login Keychain when the protected item is absent or its required entitlement is missing. Saves fall back only for `errSecMissingEntitlement`, retaining the login Keychain's default app-signature access controls; other errors remain visible. All stored codes are validated as eight-character pairing keys. Background operations suppress authentication interaction. An unreadable or malformed receiver item is preserved for recovery or an explicit Reset Pairing, while a temporary in-memory code allows receiving during the session. Read/save failures explain recovery and restart consequences. A successful remote connection remembers its key and receiver UUID for the session and attempts to save the key to Keychain; only the public receiver UUID goes into preferences. No fallback writes a secret to UserDefaults or disk.
 
-A normal launch opens Receiver and starts its listener once pairing is prepared. It does not open a full-screen output or publish a saved draft. Pause Receiving stops connections and clears output; navigating between pages does not resume it. Show Text with This Mac selected resumes a paused receiver as part of the explicit presentation operation. Reset Code stops connections, clears output, generates a new secret, and resumes only if receiving was active before the reset. Shutdown prevents a pending pairing callback from starting a listener.
+A normal launch opens eucaly Media and starts the text listener once pairing is prepared. It does not open a full-screen output or publish a saved draft. Pause Receiving stops connections and clears output; navigating between pages does not resume it. Show Text with This Mac selected resumes a paused receiver as part of the explicit presentation operation. Reset Pairing stops connections, clears output, generates a new secret, and resumes only if receiving was active before the reset. Shutdown prevents a pending pairing callback from starting a listener.
 
 The sender’s connection sheet stays open through authentication. Connect Only never requests ownership; Connect & Show Text captures the current draft and requests output after a successful connection. Transient initial transport failures retry within a 30-second setup budget, keeping the same UI connection UUID and pending publication. A stalled transport is replaced after ten seconds, with a one-second delay before retrying. Authentication, identity and application-handshake failures, or expiry of the total setup budget, stop initial retry, cancel pending publication, and keep the code editable. Cancel and destination changes invalidate queued retries. Established connections retain normal reconnection behavior. UI attempts carry a local connection UUID to discard late status callbacks after cancellation or switching destinations. This identifier is not part of the wire protocol. Successful pairings are remembered in memory for the current app session and saved in Keychain where available.
+
+## Receiver pairing and media provisioning (protocol 3)
+
+All apps must update together. There is no v1/v2 downgrade. `receiverID` is the
+single stable identity for control, Lyrics/scripture and Media. Pin it after TLS
+welcome; a discovered UUID must match both the stored pin and authenticated
+welcome. Renames and fresh service resolution retain the pin. Name/IP similarity
+never associates the retired media identity with this receiver.
+
+Eucaly advertises `mediaProvisioningV1` in hello. AltView intersects capabilities
+and includes `media: {receiverID, host?, port, ready, passphrase}` in welcome and
+complete feedback only for that negotiated capability. `passphrase` is a
+separately generated 32-character Keychain secret. Validate receiver equality,
+port 1–65535, bounded ASCII hostname and 10–79 safe ASCII secret characters before
+accepting it. The IPv4 address of the authenticated TCP peer is preferred;
+otherwise use its authenticated hostname for fresh IPv4 resolution. Media
+readiness means an SRT listener has bound, and is separate from text output
+readiness, lease ownership, snapshot acceptance and physical output. A missing
+media object clears provisioning. Unauthenticated peers cannot request credentials.
+ViewTheWord does not request this capability and remains a text sender.
+
+Receiver setup outlives individual output enablement. Pairing/restore/configuration
+is connect-only; an explicit presentation authorizes each enabled output.
+Disconnect/re-pair cancels Media authorization. Transient recovery may resume an
+already-started stream, but cannot start another source or take displaced text.
+Reset Pairing stops both outputs, changes the shared control code and its
+associated random media credential, and requires every sender to pair again.
+See [media lifecycle and upgrade instructions](media.md#pairing-and-media-credentials).
 
 ## Framing
 
 Every message is UTF-8 JSON preceded by a four-byte unsigned big-endian payload length. Valid lengths are 1…65,536 bytes, excluding the header. Receives are incremental and tolerate fragmented and combined frames. Reject malformed JSON, unknown kinds, unsupported versions, invalid lengths, and invalid required fields by closing the connection.
 
-All messages carry `version: 2` and a `kind` string. Optional fields omitted by Swift's encoder need not be sent as JSON null. UUIDs use standard strings. Revisions are unsigned 64-bit integers; integrations in JavaScript should keep revisions within its exact integer range or handle them without lossy number conversions.
+All messages carry `version: 3` and a `kind` string. Optional fields omitted by Swift's encoder need not be sent as JSON null. UUIDs use standard strings. Revisions are unsigned 64-bit integers; integrations in JavaScript should keep revisions within its exact integer range or handle them without lossy number conversions.
 
 Example state payload (framing header omitted):
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "kind": "state",
   "lease": "8D25A6AC-E5B5-42FC-BA0B-2EAA1F2E5F88",
   "revision": 1,
@@ -91,7 +127,7 @@ Example welcome (normal ownership fields omitted):
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "kind": "welcome",
   "receiverID": "F3465073-A824-4D86-BE4D-8E450117095A",
   "templates": [
@@ -179,7 +215,7 @@ Feedback has one replaceable outbox slot and cannot grow the control queue. It i
 Example feedback payload:
 
 ```json
-{"version":2,"kind":"feedback","lease":"8D25A6AC-E5B5-42FC-BA0B-2EAA1F2E5F88","revision":12,"outputReadiness":"closed"}
+{"version":3,"kind":"feedback","lease":"8D25A6AC-E5B5-42FC-BA0B-2EAA1F2E5F88","revision":12,"outputReadiness":"closed"}
 ```
 
 ## Bounds and UI isolation
@@ -212,7 +248,7 @@ The renderer uses an sRGB keying background, white text, native font fallback an
 
 ## Receiver-local lower thirds
 
-The wire protocol is version 2 and carries text with optional empty-row spacing and content-template preferences. `TemplateDesignLibrary` is saved under `templateDesignLibrary`, with independent Custom, Scripture and Lyrics designs, a receiver selection policy and shared key background. On first use, the previous `lowerThirdTemplate` and `outputStyle` preferences seed all three profiles, retaining artwork IDs and previous preset appearance; compact lines defaults to off and line spacing defaults to the previous 12%. The previous keys remain readable for older builds. Template IDs and discovery do not change, and senders do not send artwork or wait for image processing.
+The wire protocol is version 3 and carries text with optional empty-row spacing and content-template preferences. `TemplateDesignLibrary` is saved under `templateDesignLibrary`, with independent Custom, Scripture and Lyrics designs, a receiver selection policy and shared key background. On first use, the previous `lowerThirdTemplate` and `outputStyle` preferences seed all three profiles, retaining artwork IDs and previous preset appearance; compact lines defaults to off and line spacing defaults to the previous 12%. The previous keys remain readable for older builds. Template IDs and discovery do not change, and senders do not send artwork or wait for image processing.
 
 Each profile stores a `LowerThirdTemplate` and typography/full-canvas `OutputStyle`. Its `customized` flag allows saved alignment and Title/Footer choices to override the initial preset defaults. Hidden rows reclaim space even with `emptyRegions: "reserve"`; `effectiveBodyRegion` preserves the saved Body X/width and expands vertically into hidden rows. Returning labels restores saved geometry. Rendering and accessibility filter text only in a display copy.
 
@@ -235,7 +271,7 @@ A Show Text click made before the local connection is ready freezes that request
 The This Mac preview uses the receiver's shared `CanvasPresentation`; another Mac shows only the last submitted text, clearly labelled. The protocol does not stream back remote pixels or remote style. Reopening restores a private draft with This Mac selected, without starting a presentation.
 
 
-## Confidence snapshots
+## Retired Confidence snapshots (legacy wire compatibility)
 
 The sender advertises `hello.capabilities`. The receiver returns their intersection with its supported IDs in `welcome.capabilities`. Negotiation is per authenticated connection and reset on reconnect. The receiver advertises `confidenceTextV1` for presenter integrations, but the current ViewTheWord and AltView senders always preserve the complete Confidence object. There is no separate secondary-translation capability or older-receiver downgrade. Ownership, acknowledgements and template discovery retain their existing contract.
 
@@ -259,7 +295,7 @@ Senders validate the complete escaped Confidence frame after resolving templates
 
 When ready, the existing Bonjour listener also advertises its actual assigned `port` and a public `localMarker`, a SHA-256 namespaced hash of `kern.bootsessionuuid`. The marker is only a same-Mac discovery hint, never an authentication credential. If the marker matches the sending process’s current boot and the record has a valid receiver UUID and port, sender discovery offers **This Mac · receiver name** and routes the unchanged TLS protocol to `127.0.0.1:advertisedPort`. Local destinations store the stable receiver UUID as their pairing identity; their saved port is refreshed by discovery during setup and reconnect, even with Settings closed. A stopped/cancelled sender cannot restart from delayed discovery. Remote receivers continue to use their Bonjour service endpoints. Missing/nonmatching metadata remains ordinary LAN discovery; manual loopback connections use the actual port shown in AltView Settings. The receiver remains a LAN listener: selecting loopback changes the client destination, not listener access.
 
-## Local projection extension (optional v2 capability)
+## Retired local projection extension (legacy wire compatibility)
 
 `localProjectionV1` is negotiated alongside `confidenceTextV1`. It adds optional fields to existing messages; it creates no message kind, media transport, playback service or new ownership channel. Old peers ignore unknown JSON keys, and senders omit `content.projection` unless negotiated. Audience text, templates, leases and acknowledgement semantics remain unchanged. ViewTheWord is unchanged.
 

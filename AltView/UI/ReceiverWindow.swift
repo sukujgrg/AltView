@@ -1,6 +1,7 @@
 import AppKit
 
 final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, NSWindowDelegate {
+    private let mediaSecrets: any SRTMediaSecretStoring
     private let defaults: UserDefaults
     private let loadPairing: (String) throws -> Data?
     private let storePairing: (Data, String) throws -> Void
@@ -8,7 +9,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     var onPresentationActivityChange: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
     var isPresenting: Bool {
-        output.isActive || confidence.output.isActive || receiverStatus.ownerID != nil || composer?.isPresenting == true
+        output.isActive || confidence.output.isActive || confidence.receiving || receiverStatus.ownerID != nil || composer?.isPresenting == true
     }
     private lazy var updateButton: NSButton = {
         let button = UI.button("Update Available", target: self, action: #selector(checkForUpdates))
@@ -33,11 +34,11 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private var server: ReceiverServer!
     private let presentation: CanvasPresentation
     private let templatePreviewPresentation: CanvasPresentation
-    private let audiencePreviewHeading = UI.label("THIS MAC · AUDIENCE PREVIEW", size: 11, color: .secondaryLabelColor, bold: true)
+    private let audiencePreviewHeading = UI.label("THIS MAC · EUCALY LYRICS PREVIEW", size: 11, color: .secondaryLabelColor, bold: true)
     private let monitorAssignments: DisplayAssignments
     private lazy var output = OutputWindowController(presentation: presentation, displays: { [monitorAssignments] in monitorAssignments.currentDisplays() })
     private lazy var monitorControls = MonitorControls(role: .audience, assignments: monitorAssignments, output: output)
-    private lazy var confidence = ConfidenceViewController(defaults: defaults, assignments: monitorAssignments)
+    private lazy var confidence = EucalyMediaViewController(defaults: defaults, assignments: monitorAssignments, secrets: mediaSecrets)
     private lazy var preview: OutputCanvas = {
         let canvas = OutputCanvas(presentation: presentation)
         canvas.onVisible = { [weak self] in self?.refreshFitStatus() }
@@ -62,11 +63,12 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let pairingStatusLabel = UI.label("No sender connected", size: 12, color: .secondaryLabelColor)
     private let ownerLabel = UI.label("No sender controls the output", size: 14, bold: true)
     private let networkLabel = UI.label("Receiving starts automatically when AltView opens.", size: 11, color: .secondaryLabelColor)
-    private let pairingLabel = UI.label("Pairing uses an encrypted connection. Share the code with your sender once.", size: 11, color: .secondaryLabelColor)
+    private let pairingLabel = UI.label("Pairing uses an encrypted connection. Pair this receiver once for text and Media. Presentation controls remain independent.", size: 11, color: .secondaryLabelColor)
     private let pairingInstructions = UI.label("On the other Mac, open your app’s AltView connection settings. Choose this receiver and enter the code below.", size: 13)
     private let pairingCodeField = NSTextField(labelWithString: "--------")
     private var copyButton: NSButton!
     private var resetButton: NSButton!
+    private var pairingPreparationFailed = false
     private var clearButton: NSButton!
     private let fitLabel = UI.label("", size: 11, color: .secondaryLabelColor)
     private var receiveButton: NSButton!
@@ -105,13 +107,14 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     private let contentBadge = StatusBadge("NO TEXT")
     private var updatingDraft = false
 
-    init(defaults: UserDefaults = .standard, pairingKey: Data? = nil,
+    init(mediaSecrets: any SRTMediaSecretStoring = SRTMediaSecrets.shared, defaults: UserDefaults = .standard, pairingKey: Data? = nil,
          loadPairing: @escaping (String) throws -> Data? = KeyStore.read,
          storePairing: @escaping (Data, String) throws -> Void = { try KeyStore.save($0, account: $1) },
          advertiseReceiver: Bool = true, receiverPort: UInt16 = 0,
          window: NSWindow? = nil, artworkStore: PNGArtworkStore = PNGArtworkStore(),
          displays: @escaping () -> [OutputDisplay] = { OutputDisplay.current },
          presentation: CanvasPresentation = CanvasPresentation()) {
+        self.mediaSecrets = mediaSecrets
         self.defaults = defaults; self.receiverPort = receiverPort
         self.loadPairing = loadPairing; self.storePairing = storePairing
         self.advertiseReceiver = advertiseReceiver
@@ -142,6 +145,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             self?.composer?.updateLocalDisplay(text)
             self?.onPresentationActivityChange?()
         }
+        confidence.onMediaOfferChange = { [weak self] offer in self?.server.updateMediaOffer(offer) }
         confidence.onActivityChange = { [weak self] in self?.onPresentationActivityChange?() }
         composer = TextComposerViewController(defaults: defaults, localReceiverID: id, layoutCache: presentation.layoutCache) { [weak self] completion in
             self?.connectLocal(completion)
@@ -174,6 +178,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         nameField.delegate = self
         window.center()
         if let pairingKey {
+            self.confidence.configurePairing(key: pairingKey, receiverID: id)
             self.pairingKey = pairingKey
             pairingCodeField.stringValue = PairingKey.text(pairingKey)
             startReceiving()
@@ -199,7 +204,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         pairingLabel.setAccessibilityIdentifier("receiverPairingPersistence")
         pairingLabel.maximumNumberOfLines = 4
         copyButton.setAccessibilityLabel("Copy Pairing Code")
-        resetButton = UI.button("Reset Code…", target: self, action: #selector(resetPairing))
+        resetButton = UI.button("Reset Pairing…", target: self, action: #selector(resetPairing))
         resetButton.isEnabled = false
         statusLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         statusLabel.setAccessibilityIdentifier("receiverListeningStatus")
@@ -211,9 +216,9 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         networkLabel.isSelectable = true
         networkLabel.isHidden = true
         networkLabel.toolTip = "This port is chosen automatically and may change when receiving restarts."
-        let displayCard = UI.card("Audience display", content: monitorControls)
+        let displayCard = UI.card("eucaly Lyrics display", content: monitorControls)
         audienceTemplatePicker.addItems(withTitles: TextTemplateSelection.allCases.map(\.rawValue))
-        audienceTemplatePicker.setAccessibilityLabel("Audience template")
+        audienceTemplatePicker.setAccessibilityLabel("eucaly Lyrics template")
         audienceTemplatePicker.setAccessibilityIdentifier("audienceTemplate")
         audienceTemplatePicker.target = self; audienceTemplatePicker.action = #selector(audienceTemplateChanged)
         pendingAudienceTemplate = designs.selection
@@ -241,7 +246,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             inspectorContent.bottomAnchor.constraint(lessThanOrEqualTo: inspector.bottomAnchor)
         ])
         inspector.widthAnchor.constraint(equalToConstant: UI.previewInspectorWidth).isActive = true
-        inspector.setAccessibilityLabel("Audience settings")
+        inspector.setAccessibilityLabel("eucaly Lyrics settings")
 
         clearButton = UI.button("Clear & Release", target: self, action: #selector(clearOutput))
         clearButton.isEnabled = false
@@ -249,29 +254,29 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         let stage = UI.canvasStage(preview)
         audiencePreviewHeading.setAccessibilityIdentifier("audiencePreviewHeading")
         let previewTitle = UI.row(audiencePreviewHeading,
-                                 NSView(), PreviewAspectRatioPicker(stage: stage, defaults: defaults, role: "Audience"))
+                                 NSView(), PreviewAspectRatioPicker(stage: stage, defaults: defaults, role: "eucaly Lyrics", preferenceKey: "audiencePreviewAspectRatio"))
         ownerLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         contentBadge.setAccessibilityIdentifier("workspaceContentStatus")
         ownerLabel.maximumNumberOfLines = 1; ownerLabel.lineBreakMode = .byTruncatingTail
         ownerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let previewFooter = UI.column(UI.row(contentBadge, ownerLabel, NSView()), fitLabel,
-            UI.row(UI.button("Edit Audience Design", target: self, action: #selector(showDesignPage)), NSView(), clearButton), spacing: 12)
+            UI.row(UI.button("Edit eucaly Lyrics Design", target: self, action: #selector(showDesignPage)), NSView(), clearButton), spacing: 12)
         let monitor = UI.monitorPreview(heading: previewTitle, stage: stage, footer: previewFooter)
         let body = UI.row(monitor, inspector)
         body.alignment = .top; body.spacing = UI.previewColumnGap
         monitor.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -(UI.previewInspectorWidth + UI.previewColumnGap)).isActive = true
         monitor.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
         inspector.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
-        let root = UI.column(UI.pageHeading("Audience", subtitle: "Receive from your presentation app and monitor this Mac’s picture."), body, spacing: 20)
+        let root = UI.column(UI.pageHeading("eucaly Lyrics", subtitle: "Receive from your presentation app and monitor this Mac’s picture."), body, spacing: 20)
         root.distribution = .fill
         // Seed tab geometry before the first layout pass.
         pages.frame = NSRect(x: 0, y: 0, width: 1100, height: 614)
         let receiverPage = NSView(frame: pages.contentRect)
         UI.fill(root, in: receiverPage, padding: 0)
         pages.tabViewType = .noTabsNoBorder
-        let receiverItem = NSTabViewItem(identifier: "receiver"); receiverItem.view = receiverPage; receiverItem.label = "Audience"
+        let receiverItem = NSTabViewItem(identifier: "receiver"); receiverItem.view = receiverPage; receiverItem.label = "eucaly Lyrics"
         let designPage = NSView(frame: pages.contentRect)
-        let backToAudience = UI.button("Back to Audience", target: self, action: #selector(showReceiverPage))
+        let backToAudience = UI.button("Back to eucaly Lyrics", target: self, action: #selector(showReceiverPage))
         backToAudience.image = NSImage(systemSymbolName: "chevron.backward", accessibilityDescription: nil)
         backToAudience.imagePosition = .imageLeading
         let designContent = UI.column(
@@ -279,9 +284,9 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             templateEditor!.contentView, spacing: 12)
         designContent.distribution = .fill
         UI.fill(designContent, in: designPage, padding: 0)
-        let designItem = NSTabViewItem(identifier: "design"); designItem.view = designPage; designItem.label = "Audience Design"
+        let designItem = NSTabViewItem(identifier: "design"); designItem.view = designPage; designItem.label = "eucaly Lyrics Design"
         pages.addTabViewItem(receiverItem); pages.addTabViewItem(designItem)
-        let confidenceItem = NSTabViewItem(identifier: "confidence"); confidenceItem.label = "Confidence"
+        let confidenceItem = NSTabViewItem(identifier: "confidence"); confidenceItem.label = "eucaly Media"
         confidence.view.frame = pages.contentRect
         confidenceItem.view = confidence.view; pages.addTabViewItem(confidenceItem)
         let connectionsPage = NSView(frame: pages.contentRect)
@@ -292,7 +297,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             UI.row(pairingCodeField, copyButton, NSView()),
             pairingInstructions, pairingLabel,
             UI.row(receiveButton, resetButton, NSView()), networkLabel, spacing: 12)
-        let connectionCard = UI.card("Receive on this Mac", content: receiverControls)
+        let connectionCard = UI.card("Pair this AltView receiver", content: receiverControls)
         connectionCard.widthAnchor.constraint(equalToConstant: 460).isActive = true
         let senderColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sender"))
         senderColumn.title = "Sender"; senderColumn.minWidth = 180
@@ -317,7 +322,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         connectionBody.alignment = .top; connectionBody.spacing = 20
         senderCard.widthAnchor.constraint(equalTo: connectionBody.widthAnchor, constant: -480).isActive = true
         let connections = UI.column(
-            UI.pageHeading("Connections", subtitle: "Connect your sending apps once for Audience and Confidence."),
+            UI.pageHeading("Connections", subtitle: "Pair each sender once. Lyrics, scripture and Media keep independent presentation controls."),
             connectionBody, NSView(), spacing: 20)
         connections.distribution = .fill
         UI.fill(connections, in: connectionsPage, padding: 0)
@@ -357,8 +362,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         splitController = split
         window!.contentViewController = split
         updateNavigation()
-        pages.selectTabViewItem(withIdentifier: "receiver")
-        syncSidebarSelection()
+        showPage("confidence", revealWindow: false)
     }
     private func update(_ status: ReceiverStatus) {
         guard !stopped else { return }
@@ -374,14 +378,13 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             senderListEmpty.stringValue = senderRows.isEmpty ? "No senders connected"
                 : "\(status.connections) connected" + (disconnectedCount > 0 ? " · \(disconnectedCount) disconnected" : "")
         }
-        confidence.update(status)
         onPresentationActivityChange?()
         starting = status.starting
         let receiving = status.listening || status.starting
         receiveButton.title = receiving ? "Pause Receiving" : "Resume Receiving"
         receiveButton.isEnabled = pairingKey != nil
         copyButton.isEnabled = pairingKey != nil
-        resetButton.isEnabled = pairingKey != nil
+        resetButton.isEnabled = pairingKey != nil || pairingPreparationFailed
         nameField.isEditable = !receiving
         nameField.isSelectable = true
         nameField.drawsBackground = !receiving
@@ -447,8 +450,8 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }
     private func updateNavigation() {
         navigationGroups = [WorkspaceDestination("Outputs", children: [
-            WorkspaceDestination("Audience", id: "receiver", symbol: "tv"),
-            WorkspaceDestination("Confidence", id: "confidence", symbol: "text.below.photo")])]
+            WorkspaceDestination("eucaly Media", id: "confidence", symbol: "text.below.photo"),
+            WorkspaceDestination("eucaly Lyrics", id: "receiver", symbol: "tv")])]
         if customTextEnabled {
             navigationGroups.append(WorkspaceDestination("Content", children: [
                 WorkspaceDestination("Text", id: "write", symbol: "text.alignleft")]))
@@ -460,7 +463,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }
     private func syncSidebarSelection() {
         let selected = pages.selectedTabViewItem?.identifier as? String
-        // Design belongs to Audience and keeps that sidebar item selected.
+        // Design belongs to eucaly Lyrics and keeps that sidebar item selected.
         let destination = selected == "design" ? "receiver" : selected
         for row in 0..<sidebar.numberOfRows {
             if let item = sidebar.item(atRow: row) as? WorkspaceDestination, item.id == destination {
@@ -551,15 +554,17 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     @objc private func resetPairing() {
         let alert = NSAlert()
         alert.messageText = "Reset AltView pairing?"
-        alert.informativeText = "Connected senders will disconnect and output will clear. Each sender will need the new pairing code."
+        alert.informativeText = "All paired senders will disconnect. Text and Media will stop. Both credentials will rotate; each sender must enter the new receiver code. Display assignments are retained."
         alert.addButton(withTitle: "Reset Pairing"); alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window!) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             let resume = self.receiverStatus.listening || self.starting
             self.cancelLocalPublish()
+            self.confidence.invalidatePairing()
             self.server.stop(); self.starting = false
             self.failLocalConnections("Pairing code changed. Publish again when ready.")
             self.pairingKey = nil; self.receiveButton.isEnabled = false
+            self.pairingPreparationFailed = false
             self.copyButton.isEnabled = false; self.resetButton.isEnabled = false
             self.pairingCodeField.stringValue = "--------"
             self.preparePairing(reset: true, resume: resume)
@@ -574,33 +579,39 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
                 if !reset {
                     do { existing = try loadPairing("receiver") }
                     catch {
-                        // Preserve the saved item for recovery or an explicit Reset Code.
-                        notice = "Saved pairing could not be read from Keychain. This code is temporary and changes after restarting. Unlock Keychain and restart AltView to recover the saved code, or use Reset Code. \(error.localizedDescription)"
+                        // Preserve the saved item for recovery or an explicit Reset Pairing.
+                        notice = "Saved pairing could not be read from Keychain. This code is temporary and changes after restarting. Unlock Keychain and restart AltView to recover the saved code, or use Reset Pairing. \(error.localizedDescription)"
                     }
                 }
                 let key = try existing ?? PairingKey.generate()
                 if existing == nil, notice == nil {
                     do { try storePairing(key, "receiver") }
                     catch {
+                        if reset { throw error }
                         notice = "Keychain could not save this pairing. This code is temporary and changes after restarting AltView. Enter it again on the sending Mac after restarting. \(error.localizedDescription)"
                     }
                 }
                 DispatchQueue.main.async {
                     guard let self, !self.stopped else { return }
+                    self.confidence.configurePairing(key: key, receiverID: self.server.receiverID)
+                    self.pairingPreparationFailed = false
                     self.pairingKey = key
                     self.pairingCodeField.stringValue = PairingKey.text(key)
                     self.receiveButton.isEnabled = true
                     self.copyButton.isEnabled = true; self.resetButton.isEnabled = true
                     self.receiveButton.title = "Resume Receiving"
                     self.statusLabel.stringValue = "Receiving paused"
-                    self.pairingLabel.stringValue = notice ?? "Enter this code on the sending Mac. The connection is encrypted."
+                    self.pairingLabel.stringValue = notice ?? "Enter this 8-character receiver code on the sending Mac. The longer SRT encryption secret is generated and shared automatically."
                     self.pairingLabel.toolTip = self.pairingLabel.stringValue
                     if resume || !self.localWaiters.isEmpty { self.startReceiving() }
                 }
             } catch {
                 DispatchQueue.main.async {
                     guard let self, !self.stopped else { return }
+                    self.pairingPreparationFailed = true
+                    self.resetButton.isEnabled = true
                     self.statusLabel.stringValue = "Could not prepare pairing: \(error.localizedDescription)"
+                    self.pairingLabel.stringValue = "Receiver stopped. Resolve the Keychain error, then choose Reset Pairing to try again."
                     self.failLocalConnections(self.statusLabel.stringValue)
                 }
             }
@@ -624,8 +635,8 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
     }
     private var audienceDesignUsage: String {
         let profile = designs.profileID(for: outputDesignContent).rawValue
-        if let owner = receiverStatus.ownerName { return "Audience uses \(profile) · From \(owner)" }
-        return "Audience template: \(designs.selection.rawValue) · No active sender"
+        if let owner = receiverStatus.ownerName { return "eucaly Lyrics uses \(profile) · From \(owner)" }
+        return "eucaly Lyrics template: \(designs.selection.rawValue) · No active sender"
     }
     @objc private func audienceTemplateChanged() {
         pendingAudienceTemplate = TextTemplateSelection(rawValue: audienceTemplatePicker.titleOfSelectedItem ?? "") ?? .sender
@@ -640,7 +651,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
         audienceTemplatePicker.isEnabled = !publishing
         applyTemplateButton.isEnabled = pendingAudienceTemplate != designs.selection && !artworkBusy && !missingArtwork && !publishing
         audienceTemplateHint.stringValue = missingArtwork
-            ? "\(candidate.profileID(for: outputDesignContent).rawValue) PNG unavailable. Open Audience Design to replace it or hide Artwork."
+            ? "\(candidate.profileID(for: outputDesignContent).rawValue) PNG unavailable. Open eucaly Lyrics Design to replace it or hide Artwork."
             : pendingAudienceTemplate == .sender
             ? "Follow the sending app’s template. Text without a template uses Custom."
             : "Use \(candidate.profileID(for: outputDesignContent).rawValue) for all incoming text."
@@ -663,7 +674,7 @@ final class ReceiverWindowController: NSWindowController, NSTextFieldDelegate, N
             if preview.presentation !== presentation { templatePreviewPresentation.stopAnimation() }
             preview.setPresentation(presentation)
         }
-        audiencePreviewHeading.stringValue = pending ? "TEMPLATE PREVIEW · NOT APPLIED" : "THIS MAC · AUDIENCE PREVIEW"
+        audiencePreviewHeading.stringValue = pending ? "TEMPLATE PREVIEW · NOT APPLIED" : "THIS MAC · EUCALY LYRICS PREVIEW"
         let scene = preview.presentation
         let displayed = scene.template.contentForDisplay(scene.content)
         let hasText = [displayed.title, displayed.body, displayed.footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

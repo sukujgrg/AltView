@@ -66,9 +66,11 @@ def verify_feed(feed, info, archive, download_url, previous_feed=None):
         raise ValueError("The update feed version differs from the archived app.")
     if item.findtext(SPARKLE + "minimumSystemVersion") != info["LSMinimumSystemVersion"]:
         raise ValueError("The update feed must preserve the app's minimum macOS version.")
-    # Universal archives must remain eligible on both Intel and Apple Silicon.
-    if item.find(SPARKLE + "hardwareRequirements") is not None:
-        raise ValueError("The universal update feed must not restrict hardware architectures.")
+    # This app targets Apple Silicon while historical Intel-compatible items
+    # retain their signed eligibility metadata. New feeds must not offer this
+    # archive to an Intel Mac.
+    if item.findtext(SPARKLE + "hardwareRequirements") != "arm64":
+        raise ValueError("The update feed must require Apple Silicon for this archive.")
     enclosure = item.find("enclosure")
     if enclosure is None or enclosure.get("url") != download_url:
         raise ValueError("The update feed must point at this release's exact archive.")

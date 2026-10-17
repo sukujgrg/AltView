@@ -50,7 +50,7 @@ final class OutputWindowController: NSObject, NSWindowDelegate {
          displays: @escaping () -> [OutputDisplay] = { OutputDisplay.current },
          beginActivity: @escaping (ProcessInfo.ActivityOptions, String) -> NSObjectProtocol = { ProcessInfo.processInfo.beginActivity(options: $0, reason: $1) },
          endActivity: @escaping (NSObjectProtocol) -> Void = { ProcessInfo.processInfo.endActivity($0) }) {
-        self.init(name: "Audience", makeCanvas: { OutputCanvas(presentation: presentation) },
+        self.init(name: "eucaly Lyrics", makeCanvas: { OutputCanvas(presentation: presentation) },
                   backgroundColor: { presentation.style.backgroundColor }, displays: displays,
                   beginActivity: beginActivity, endActivity: endActivity)
     }

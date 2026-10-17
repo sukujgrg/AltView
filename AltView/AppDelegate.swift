@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
         appMenu.addItem(withTitle: "About AltView", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Third-Party Notices…", action: #selector(showThirdPartyNotices), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         let check = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(AppUpdateController.checkForUpdates(_:)), keyEquivalent: "")
         check.target = updates
@@ -71,9 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let viewItem = NSMenuItem(); menu.addItem(viewItem)
         let view = NSMenu(title: "View"); viewItem.submenu = view
-        let output = view.addItem(withTitle: "Show Audience", action: #selector(showReceiver), keyEquivalent: "3"); output.target = self
-        let design = view.addItem(withTitle: "Show Audience Design", action: #selector(showDesign), keyEquivalent: "2"); design.target = self
-        let confidence = view.addItem(withTitle: "Show Confidence", action: #selector(showConfidence), keyEquivalent: "4"); confidence.target = self
+        let output = view.addItem(withTitle: "Show eucaly Lyrics", action: #selector(showReceiver), keyEquivalent: "3"); output.target = self
+        let design = view.addItem(withTitle: "Show eucaly Lyrics Design", action: #selector(showDesign), keyEquivalent: "2"); design.target = self
+        let confidence = view.addItem(withTitle: "Show eucaly Media", action: #selector(showConfidence), keyEquivalent: "4"); confidence.target = self
         let connections = view.addItem(withTitle: "Show Connections", action: #selector(showConnections), keyEquivalent: "5"); connections.target = self
         customTextMenuItem = view.addItem(withTitle: "Show Text", action: #selector(showComposer), keyEquivalent: "1")
         customTextMenuItem?.target = self
@@ -83,11 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windows.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windows.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windows.addItem(.separator())
-        let close = windows.addItem(withTitle: "Close Audience Display", action: #selector(closeOutput), keyEquivalent: "o")
+        let close = windows.addItem(withTitle: "Close eucaly Lyrics Display", action: #selector(closeOutput), keyEquivalent: "o")
         close.keyEquivalentModifierMask = [.command, .shift]; close.target = self
-        let stopConfidence = windows.addItem(withTitle: "Close Confidence Display", action: #selector(closeConfidence), keyEquivalent: "o")
+        let stopConfidence = windows.addItem(withTitle: "Close eucaly Media Display", action: #selector(closeConfidence), keyEquivalent: "o")
         stopConfidence.keyEquivalentModifierMask = [.command, .option, .shift]; stopConfidence.target = self
         NSApp.windowsMenu = windows
         NSApp.mainMenu = menu
+    }
+    @objc private func showThirdPartyNotices() {
+        if let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt") { NSWorkspace.shared.open(url) }
     }
 }

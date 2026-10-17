@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/build.sh [--help]
 
-Build and export a universal (arm64 and x86_64) app to ~/Applications.
+Build and export an Apple Silicon (arm64) app to ~/Applications.
 Use make release to sign, notarize, and publish a distribution release.
 
 Options:
@@ -46,7 +46,7 @@ xcodebuild \
   archive \
   STRIP_INSTALLED_PRODUCT=YES \
   COPY_PHASE_STRIP=YES \
-  'ARCHS=arm64 x86_64' \
+  ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=NO
 
 cat > "$EXPORT_PLIST" <<'PLIST'

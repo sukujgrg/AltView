@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import SystemConfiguration
 import os
 
 struct ReceiverConnection: Equatable {
@@ -34,6 +35,7 @@ final class ReceiverServer {
     private var localProcesses: [UUID: LocalProjectionProcess] = [:]
     private var localConnections: Set<UUID> = []
     private var peerCapabilities: [UUID: Set<String>] = [:]
+    private var mediaOffer: MediaOffer?
     private var outputReadiness = OutputReadiness.closed
     private var templatePolicy = TemplatePolicy.sender
     private var state = ReceiverState()
@@ -187,6 +189,26 @@ final class ReceiverServer {
         }
         publish()
     }
+    /// Configuration and readiness never claim text ownership or start SRT.
+    func updateMediaOffer(_ offer: MediaOffer?) {
+        queue.async { [weak self] in
+            guard let self, offer?.isValid ?? true, offer?.receiverID == self.receiverID || offer == nil else { return }
+            self.mediaOffer = offer
+            self.broadcastFeedback()
+        }
+    }
+    private func media(for peer: PeerChannel) -> MediaOffer? {
+        guard peerCapabilities[peer.id]?.contains(AltViewProtocol.mediaProvisioning) == true,
+              var offer = mediaOffer else { return nil }
+        if case .hostPort(.ipv4(let address), _) = peer.connection.currentPath?.localEndpoint {
+            offer.host = address.debugDescription
+        } else if let name = SCDynamicStoreCopyLocalHostName(nil) as String? {
+            // TCP can choose IPv6 on a dual-stack LAN. SRT currently uses IPv4;
+            // provision this Mac's authenticated mDNS hostname for fresh A lookup.
+            offer.host = name + ".local"
+        }
+        return offer
+    }
     func updateOutputReadiness(_ readiness: OutputReadiness) {
         queue.async { [weak self] in
             guard let self, self.outputReadiness != readiness else { return }
@@ -306,7 +328,7 @@ final class ReceiverServer {
             AltViewLog.receiver.notice("sender_identified peer=\(peer.id.uuidString, privacy: .public) occupied=\(self.state.ownerConnection != nil) local_connection=\(self.localConnections.contains(peer.id)) local_identity_reported=\(message.localProcess != nil)")
             peer.send(WireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name,
                                  templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy,
-                                 capabilities: negotiated.sorted()))
+                                 capabilities: negotiated.sorted(), media: media(for: peer)))
             sendFeedback(to: peer)
             publish()
             return
@@ -394,7 +416,7 @@ final class ReceiverServer {
         peer.send(WireMessage(kind: .feedback, lease: hasSnapshot ? state.lease : nil,
                               revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness,
                               templates: TemplateDescriptor.builtIns, templatePolicy: templatePolicy,
-                              capabilities: peerCapabilities[peer.id]?.sorted()))
+                              capabilities: peerCapabilities[peer.id]?.sorted(), media: media(for: peer)))
     }
     private func publish() {
         status.connections = state.senders.count

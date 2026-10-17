@@ -376,7 +376,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
         actions.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
         let footer = UI.column(draftScope, actions, spacing: 6)
         footer.setHuggingPriority(.required, for: .vertical)
-        let heading = UI.pageHeading("Audience Design", subtitle: "Set the appearance of the audience display. Apply when you’re ready.")
+        let heading = UI.pageHeading("eucaly Lyrics Design", subtitle: "Set the appearance of the eucaly Lyrics display. Apply when you’re ready.")
         let footerDivider = UI.separator()
         let root = UI.column(heading, body, footerDivider, footer, spacing: 16)
         root.setCustomSpacing(8, after: footerDivider)
@@ -396,7 +396,7 @@ final class LowerThirdWindowController: NSWindowController, NSTextFieldDelegate,
             let design = incoming.design(editingProfile)
             template = design.template; style = design.style
         }
-        // Audience assignment is changed on the Audience page, independently of design drafts.
+        // eucaly Lyrics assignment is changed on the eucaly Lyrics page, independently of design drafts.
         library?.selection = incoming.selection
         appliedLibrary = incoming; appliedAssets = artworks
         let applied = incoming.design(editingProfile)

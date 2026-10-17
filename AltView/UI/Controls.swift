@@ -159,14 +159,14 @@ final class PreviewAspectRatioPicker: NSPopUpButton {
     private let stage: WorkspaceCanvasStage
     private let defaults: UserDefaults
     private let preferenceKey: String
-    init(stage: WorkspaceCanvasStage, defaults: UserDefaults, role: String) {
+    init(stage: WorkspaceCanvasStage, defaults: UserDefaults, role: String, preferenceKey: String? = nil) {
         self.stage = stage; self.defaults = defaults
-        preferenceKey = "\(role.lowercased())PreviewAspectRatio"
+        self.preferenceKey = preferenceKey ?? "\(role.lowercased())PreviewAspectRatio"
         super.init(frame: .zero, pullsDown: false)
         controlSize = .small
         font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         addItems(withTitles: PreviewAspectRatio.allCases.map(\.rawValue))
-        let saved = defaults.string(forKey: preferenceKey).flatMap(PreviewAspectRatio.init(rawValue:)) ?? .widescreen
+        let saved = defaults.string(forKey: self.preferenceKey).flatMap(PreviewAspectRatio.init(rawValue:)) ?? .widescreen
         selectItem(withTitle: saved.rawValue)
         stage.aspectRatio = saved
         setAccessibilityLabel("\(role) preview aspect ratio")

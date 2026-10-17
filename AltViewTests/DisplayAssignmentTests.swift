@@ -117,7 +117,7 @@ final class DisplayAssignmentTests: XCTestCase {
         let output = output(.audience, inventory: inventory)
         defer { output.stop() }
         output.show(target: a.target)
-        let initial = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView Audience" && $0.isVisible })
+        let initial = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView eucaly Lyrics" && $0.isVisible })
         XCTAssertEqual(output.readiness, .ready)
         inventory.displays = [monitor(identity: "replacement-monitor")]
         NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -141,7 +141,7 @@ final class DisplayAssignmentTests: XCTestCase {
         let output = output(.confidence, inventory: inventory)
         defer { output.stop() }
         output.show(target: a.target)
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView Confidence" && $0.isVisible })
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView eucaly Media" && $0.isVisible })
         inventory.displays = [monitor(mirrored: true)]
         NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
         XCTAssertEqual(output.readiness, .unavailable)
@@ -164,10 +164,10 @@ final class DisplayAssignmentTests: XCTestCase {
         let aPicker = try picker(in: aControls), cPicker = try picker(in: cControls)
         XCTAssertTrue(assignments.select(a.target, for: .audience))
         XCTAssertEqual(aPicker.titleOfSelectedItem, "1 · Studio Display")
-        let occupied = try XCTUnwrap(cPicker.item(withTitle: "1 · Studio Display · Audience"))
+        let occupied = try XCTUnwrap(cPicker.item(withTitle: "1 · Studio Display · eucaly Lyrics"))
         XCTAssertFalse(occupied.isEnabled)
         XCTAssertTrue(assignments.select(b.target, for: .confidence))
-        XCTAssertFalse(try XCTUnwrap(aPicker.item(withTitle: "2 · Studio Display · Confidence")).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(aPicker.item(withTitle: "2 · Studio Display · eucaly Media")).isEnabled)
         XCTAssertEqual(cPicker.titleOfSelectedItem, "2 · Studio Display")
         cPicker.selectItem(at: 0); cPicker.sendAction(cPicker.action, to: cPicker.target)
         XCTAssertTrue(try XCTUnwrap(aPicker.item(withTitle: "2 · Studio Display")).isEnabled)
@@ -297,7 +297,7 @@ final class DisplayAssignmentTests: XCTestCase {
         XCTAssertTrue(labels.rename(c.target, to: "Front Right TV"))
         let window = MonitorLayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
                                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false,
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false,
                                                   window: window, displays: { [a, b, c] })
         defer { controller.shutdown(); controller.close() }
         controller.showWindow(nil); window.setContentSize(NSSize(width: 1160, height: 650))
@@ -385,8 +385,8 @@ final class DisplayAssignmentTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: "audienceMonitorAssignment"), savedAssignment)
         XCTAssertEqual(try picker(in: aControls).titleOfSelectedItem, "1 · Front Left TV")
         XCTAssertFalse(try picker(in: aControls).isEnabled)
-        XCTAssertFalse(try XCTUnwrap(picker(in: cControls).item(withTitle: "1 · Front Left TV · Audience")).isEnabled)
-        XCTAssertTrue(views(aControls).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Audience on 1 · Front Left TV" })
+        XCTAssertFalse(try XCTUnwrap(picker(in: cControls).item(withTitle: "1 · Front Left TV · eucaly Lyrics")).isEnabled)
+        XCTAssertTrue(views(aControls).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "eucaly Lyrics on 1 · Front Left TV" })
         audience.stop()
         XCTAssertTrue(assignments.select(nil, for: .audience))
         XCTAssertTrue(assignments.select(a.target, for: .confidence))

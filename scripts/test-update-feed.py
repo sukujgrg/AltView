@@ -91,6 +91,7 @@ class UpdateFeedTests(unittest.TestCase):
                 <enclosure url="{old_url}" sparkle:edSignature="{old_signature}" length="9"/></item>'''
             current = f'''<item><sparkle:version>101</sparkle:version><sparkle:shortVersionString>4.1.0</sparkle:shortVersionString>
                 <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+                <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
                 <enclosure url="{url}" sparkle:edSignature="{signature}" length="7"/></item>'''
             def xml(items):
                 return f'<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>{items}</channel></rss>'
@@ -146,6 +147,7 @@ class UpdateFeedTests(unittest.TestCase):
             xml = f'''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
                 <sparkle:version>20260910</sparkle:version><sparkle:shortVersionString>3.1.0</sparkle:shortVersionString>
                 <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+                <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
                 <enclosure url="{url}" sparkle:edSignature="{signature}" length="7" type="application/octet-stream"/>
                 </item></channel></rss>'''
             info = {"CFBundleVersion": "20260910", "CFBundleShortVersionString": "3.1.0", "LSMinimumSystemVersion": "12.0"}
@@ -153,8 +155,8 @@ class UpdateFeedTests(unittest.TestCase):
             self.assertEqual(update_feed.verify_feed(feed, info, archive, url), signature)
             for before, after in [(url, "https://example.invalid/other.zip"), ('length="7"', 'length="8"'),
                                   ("12.0", "15.0"), ("3.1.0</", "3.0.5</"), (signature, ""),
-                                  ("<enclosure", "<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements><enclosure"),
-                                  ("<enclosure", "<sparkle:hardwareRequirements>x86_64</sparkle:hardwareRequirements><enclosure")]:
+                                  ("<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>", ""),
+                                  ("<sparkle:hardwareRequirements>arm64", "<sparkle:hardwareRequirements>x86_64")]:
                 with self.subTest(change=(before, after)):
                     feed.write_text(xml.replace(before, after))
                     with self.assertRaises(ValueError):

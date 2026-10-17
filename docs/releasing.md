@@ -8,7 +8,7 @@ GitHub Actions validates source; it does not sign or publish releases.
 
 | Command | Result |
 | --- | --- |
-| `make build` | Archive and export a universal app into `~/Applications/AltView.app` for local use |
+| `make build` | Archive and export an Apple Silicon app into `~/Applications/AltView.app` for local use |
 | `make test` | App tests plus offline version, feed and release regressions |
 | `make test-release` | Only the offline release regressions |
 | `make release-check` | Check clean source, public destination, tags and CI |
@@ -66,7 +66,7 @@ the Developer ID certificate or the Sparkle update-signing key.
    `main`. Keep the checkout clean, including untracked files.
 2. Run `make release`. The script requires the newest successful **Validate**
    push run on `main` for the exact source commit. It waits for that run if needed.
-3. The script archives and exports the universal app, submits it to Apple,
+3. The script archives and exports the Apple Silicon app, submits it to Apple,
    checks Apple's acceptance and archive hash, staples a copy, then produces the
    signed archive and appcast. Only after preparation does it push `v<VERSION>`
    and create a GitHub draft. It verifies all uploads before publishing the draft
@@ -125,7 +125,7 @@ Do not force tags or manually replace release assets to bypass these checks.
 
 `Makefile` and `VERSION` are the entry points. `scripts/build.sh` is the local
 build/export command. `scripts/release.py` is adapted from eucaly's resumable
-pipeline, with AltView's universal and sandbox verification. `scripts/update-feed.py`
+pipeline, with AltView's arm64 and sandbox verification. `scripts/update-feed.py`
 generates and verifies Sparkle feeds. `scripts/generate-info-plist.sh` applies
 `VERSION` before signing. `scripts/generate-project.py` owns the checked-in Xcode
 project, including its pinned Sparkle dependency and version phase. Regenerate it

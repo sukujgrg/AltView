@@ -161,7 +161,7 @@ final class SenderClient {
         AltViewLog.sender.notice("connection_attempt connection=\(self.status.connectionID?.uuidString ?? "none", privacy: .public) peer=\(peer.id.uuidString, privacy: .public) attempt=\(self.attempts + 1) restoring=\(self.shouldRestoreOwnership)")
         peer.onReady = { [weak self, weak peer] in
             guard let self, let peer, self.peer === peer else { return }
-            peer.send(WireMessage(kind: .hello, senderID: self.senderID, name: self.name, capabilities: AltViewProtocol.capabilities))
+            peer.send(WireMessage(kind: .hello, senderID: self.senderID, name: self.name, capabilities: []))
             // The application handshake starts after the transport is ready.
             self.queue.asyncAfter(deadline: .now() + AltViewProtocol.timeout) { [weak self, weak peer] in
                 guard let self, let peer, self.peer === peer, !self.status.connected else { return }
