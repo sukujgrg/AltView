@@ -53,7 +53,9 @@ nonisolated enum SRTMediaError: LocalizedError {
     }
 }
 
-nonisolated protocol SRTMediaSecretStoring: Sendable {
+// Sendable keeps this protocol nonisolated without inferring a type-wide
+// nonisolated modifier onto conforming actors on older Swift toolchains.
+protocol SRTMediaSecretStoring: Sendable {
     func read(_ account: String) async throws -> String?
     func save(_ value: String, account: String) async throws
 }
