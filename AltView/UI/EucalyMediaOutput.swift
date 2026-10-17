@@ -98,6 +98,10 @@ final class EucalyMediaViewController: NSViewController {
     private var audioDevices: [MediaAudioDevice] = []
     private let status = UI.label("Stopped", size: 12, bold: true)
     private let detail = UI.label("", size: 11, color: .secondaryLabelColor)
+    private let discoveryStatus = UI.label("", size: 11, color: .secondaryLabelColor)
+    private lazy var advertisement = SRTMediaAdvertisement { [weak self] notice in
+        self?.discoveryStatus.stringValue = notice ?? "Discoverable in eucaly’s Receiver menu."
+    }
     private let audioStatus = UI.label("", size: 11, color: .secondaryLabelColor)
     private let mute = NSButton(checkboxWithTitle: "Mute received audio", target: nil, action: nil)
     private lazy var receiveButton = UI.button("Start Receiving", target: self, action: #selector(toggleReceiving))
@@ -134,12 +138,12 @@ final class EucalyMediaViewController: NSViewController {
         addresses.isSelectable = true
         let controls = UI.column(UI.card("Media display", content: monitors),
             UI.card("Receive from eucaly", content: UI.column(
-                UI.label("In eucaly, add an AltView Media output in Manage Outputs. Enter this Mac’s local address, this port and this passphrase. Use wired Ethernet on both Macs.", size: 11, color: .secondaryLabelColor),
+                UI.label("In eucaly, add an AltView Media output in Manage Outputs. Start Receiving here, choose this Mac in its Receiver menu and enter this passphrase. Ethernet is recommended; Wi-Fi works on the same local network.", size: 11, color: .secondaryLabelColor),
                 addresses,
                 UI.row(UI.label("Port", size: 12), port),
                 UI.row(UI.label("Passphrase", size: 12), secret),
                 UI.button("Copy Passphrase", target: self, action: #selector(copyPassphrase)),
-                UI.row(UI.label("Recovery buffer", size: 12), latency), receiveButton, status, detail)),
+                UI.row(UI.label("Recovery buffer", size: 12), latency), receiveButton, status, detail, discoveryStatus)),
             UI.card("Audio", content: UI.column(audio, refreshAudio, mute, audioStatus,
                 UI.label("Choose the HDMI audio device connected to ATEM. Audio plays once, shared by preview and display.", size: 11, color: .secondaryLabelColor))), spacing: 14)
         let stage = UI.canvasStage(EucalyMediaCanvas(presentation: presentation))
@@ -196,6 +200,11 @@ final class EucalyMediaViewController: NSViewController {
             guard let self else { return }
             do { try await SRTMediaSecrets.shared.save(passphrase, account: "receiver") }
             catch { if self.generation == token { self.stopReceiving(); self.status.stringValue = error.localizedDescription }; return }
+            guard self.generation == token, !Task.isCancelled else { return }
+            let receiverID = self.defaults.string(forKey: "mediaReceiverID").flatMap(UUID.init(uuidString:)) ?? UUID()
+            self.defaults.set(receiverID.uuidString, forKey: "mediaReceiverID")
+            self.discoveryStatus.stringValue = "Publishing Bonjour receiver…"
+            self.advertisement.start(id: receiverID, port: settings.port)
             while !Task.isCancelled && self.generation == token {
                 let session = SRTMediaSession(), sink = SRTMediaDecodedOutput()
                 self.session = session; self.sink = sink
@@ -223,7 +232,7 @@ final class EucalyMediaViewController: NSViewController {
                         }
                         try await Task.sleep(nanoseconds: 500_000_000)
                     }
-                } catch { if self.generation == token { self.status.stringValue = "Connection ended · waiting to retry" } }
+                } catch { if self.generation == token { self.status.stringValue = "Receiver unavailable: \(error.localizedDescription) · retrying…" } }
                 sink.ingest.finish(); self.drainTask?.cancel(); self.drainTask = nil
                 await session.close()
                 guard self.generation == token && !Task.isCancelled else { break }
@@ -238,6 +247,7 @@ final class EucalyMediaViewController: NSViewController {
     }
     func stopReceiving() {
         generation = UUID(); receiving = false
+        advertisement.stop(); discoveryStatus.stringValue = ""
         receiverTask?.cancel(); receiverTask = nil; drainTask?.cancel(); drainTask = nil
         sink?.ingest.finish(); sink = nil
         let retired = session; session = nil
@@ -250,7 +260,7 @@ final class EucalyMediaViewController: NSViewController {
     func shutdown() { stopReceiving(); output.stop() }
     private static func localAddresses() -> String {
         var list: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&list) == 0 else { return "Find this Mac’s Ethernet address in System Settings → Network." }
+        guard getifaddrs(&list) == 0 else { return "Find this Mac’s IP address in System Settings → Network." }
         defer { freeifaddrs(list) }
         var values: [String] = [], cursor = list
         while let entry = cursor {
@@ -263,6 +273,6 @@ final class EucalyMediaViewController: NSViewController {
                 values.append("\(String(cString: entry.pointee.ifa_name)): \(String(cString: host))")
             }
         }
-        return values.isEmpty ? "Connect Ethernet to obtain a local address." : "Local addresses · choose Ethernet:\n" + values.joined(separator: "\n")
+        return values.isEmpty ? "Connect to Ethernet or Wi-Fi to obtain a local address." : "Manual connection addresses:\n" + values.joined(separator: "\n")
     }
 }
