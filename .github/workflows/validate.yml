@@ -35,11 +35,12 @@ jobs:
           for script in scripts/*.sh; do
             bash -n "$script"
           done
-      - name: Release build
+      - name: Release archive
         run: >-
           xcodebuild -project AltView.xcodeproj -scheme AltView
           -configuration Release -derivedDataPath build/DerivedData
-          CODE_SIGNING_ALLOWED=NO build
+          -archivePath build/CI/AltView.xcarchive
+          CODE_SIGNING_ALLOWED=NO archive
       - name: Verify Apple Silicon release and built metadata
         run: |
           python3 - <<'PY'
@@ -47,10 +48,13 @@ jobs:
           import sys
           from pathlib import Path
           sys.path.insert(0, "scripts")
-          from release import verify_arm64_app
+          from release import verify_app_archive, verify_arm64_app
           version = Path("VERSION").read_text().strip()
-          for configuration in ("Debug", "Release"):
-              app = Path("build/DerivedData/Build/Products") / configuration / "AltView.app"
+          apps = {
+              "Debug": Path("build/DerivedData/Build/Products/Debug/AltView.app"),
+              "Release": verify_app_archive(Path("build/CI/AltView.xcarchive")),
+          }
+          for configuration, app in apps.items():
               if configuration == "Release":
                   verify_arm64_app(app)
               info = plistlib.loads((app / "Contents/Info.plist").read_bytes())

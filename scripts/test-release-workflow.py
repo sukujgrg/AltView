@@ -261,12 +261,17 @@ class ReleaseFlowTests(unittest.TestCase):
             if "archive" in args:
                 self.assertIn("ARCHS=arm64", args)
                 self.assertIn("ONLY_ACTIVE_ARCH=NO", args)
+                self.assertFalse(any(arg.startswith("SKIP_INSTALL=") for arg in args),
+                                 "Global install overrides also install Swift package object files")
                 self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
                 self.assertFalse(any(arg.startswith("MARKETING_VERSION=") for arg in args))
                 build = next(arg.split("=", 1)[1] for arg in args if arg.startswith("CURRENT_PROJECT_VERSION="))
                 archive = Path(args[args.index("-archivePath") + 1])
                 archive.mkdir(parents=True)
                 (archive / "build-number").write_text(build)
+                (archive / "Products/Applications/AltView.app").mkdir(parents=True)
+                (archive / "Info.plist").write_bytes(plistlib.dumps({
+                    "ApplicationProperties": {"ApplicationPath": "Applications/AltView.app"}}))
                 self.after_archive()
             elif "-exportArchive" in args:
                 archive = Path(args[args.index("-archivePath") + 1])
@@ -594,6 +599,36 @@ class ReleaseFlowTests(unittest.TestCase):
 
     def fail_once(self, stage, phase="before", occurrence=1):
         self.failures[(stage, phase)] = occurrence
+
+    def test_generic_archive_stops_before_export_without_checkpointing_it(self):
+        def install_dependency():
+            archive = self.directory / "work/AltView.xcarchive"
+            objects = archive / "Products/Users/runner/Objects"
+            objects.mkdir(parents=True)
+            (objects / "HaishinKit.o").write_bytes(b"package object")
+            (archive / "Info.plist").write_bytes(plistlib.dumps({"ArchiveVersion": 2}))
+        self.after_archive = install_dependency
+        with self.assertRaisesRegex(release.ReleaseError, "generic or invalid app archive"):
+            self.invoke()
+        self.assertNotIn("archive_hash", self.state)
+        self.assertEqual(self.count("xcodebuild", "-exportArchive"), 0)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
+
+    def test_cached_archive_is_validated_before_retrying_export(self):
+        self.fail_once("export")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        archive = self.directory / "work/AltView.xcarchive"
+        (archive / "Info.plist").write_bytes(plistlib.dumps({"ArchiveVersion": 2}))
+        # Model a generic archive checkpointed by the previous release script.
+        release.checkpoint(self.directory, self.state, archive_hash=release.digest(archive))
+        with self.assertRaisesRegex(release.ReleaseError, "generic or invalid app archive"):
+            self.invoke()
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcodebuild", "-exportArchive"), 1)
+        self.assertTrue(archive.is_dir(), "Preserve the failed archive for inspection")
+        self.assert_not_published()
 
     def test_export_failure_reuses_the_completed_archive(self):
         self.fail_once("export")

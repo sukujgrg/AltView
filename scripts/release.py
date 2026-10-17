@@ -349,6 +349,29 @@ def next_build_number(previous):
     return str(build)
 
 
+def verify_app_archive(archive):
+    """Developer ID export requires one app, without installed dependencies."""
+    products = archive / "Products"
+    applications = products / "Applications"
+    app = applications / f"{APP_NAME}.app"
+    try:
+        info = plistlib.loads((archive / "Info.plist").read_bytes())
+        properties = info.get("ApplicationProperties") if isinstance(info, dict) else None
+        valid = (isinstance(properties, dict)
+                 and properties.get("ApplicationPath") == f"Applications/{APP_NAME}.app"
+                 and app.is_dir()
+                 and {path.name for path in products.iterdir()} == {"Applications"}
+                 and {path.name for path in applications.iterdir()} == {app.name})
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        valid = False
+    if not valid:
+        raise ReleaseError(f"Xcode produced a generic or invalid app archive: {archive}. "
+                           "Expected only Products/Applications/AltView.app. "
+                           "Do not override SKIP_INSTALL globally; dependencies must skip installation. "
+                           "Preserve failed release work and prepare again from the corrected source.")
+    return app
+
+
 def verify_arm64_app(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     framework = app / "Contents/Frameworks/Sparkle.framework"
@@ -526,16 +549,19 @@ def prepare(directory, state, args):
     exported = preserved(directory, state, "export_hash", app)
     if not exported:
         archive = work / f"{APP_NAME}.xcarchive"
-        if not preserved(directory, state, "archive_hash", archive):
+        archived = preserved(directory, state, "archive_hash", archive)
+        if not archived:
             if archive.exists():
                 shutil.rmtree(archive)
             source_commit(state["commit"])
             run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
                 "-derivedDataPath", derived, "-archivePath", archive, "archive",
-                "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
+                "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO",
                 "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=YES",
                 f"CURRENT_PROJECT_VERSION={state['build']}", f"ALTVIEW_SOURCE_COMMIT={state['commit']}")
             source_commit(state["commit"])
+        verify_app_archive(archive)
+        if not archived:
             checkpoint(directory, state, archive_hash=digest(archive))
         if app.parent.exists():
             shutil.rmtree(app.parent)

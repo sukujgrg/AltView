@@ -22,12 +22,16 @@ or run `scripts/set-version.sh 1.1`. Xcode generates the app's Info.plist in Der
 before signing; do not edit the version in the project or in a built app. Release
 build numbers advance automatically beyond all entries in the previous feed.
 
-The app remains sandboxed and supports **macOS 12+, Intel and Apple Silicon**.
-Release verification checks both architecture slices, the signing team, hardened
+The app remains sandboxed and supports **macOS 12+ on Apple Silicon**.
+Release verification checks the arm64 architecture, the signing team, hardened
 runtime, sandbox/network/Sparkle entitlements, source commit and version. Debug
 builds use ad-hoc signing with a Debug-only library-validation exception. Release
 builds use team `E5N29VFW8T`, automatic signing and full library validation. Archive
 export re-signs Sparkle and its helper tools with your Developer ID certificate.
+The app target uses its normal `SKIP_INSTALL=NO` setting; dependency targets skip
+installation. Never pass `SKIP_INSTALL=NO` as a global archive override: it also
+installs Swift package object files and produces a generic archive that Xcode
+cannot export. CI archives the unsigned Release app and validates its structure.
 
 ## One-time setup on the release Mac
 
@@ -100,6 +104,13 @@ previous signed feed. Archives and feeds are both signed with the AltView key;
 feed generation retains earlier items and their OS/hardware eligibility.
 
 ## Resume interrupted work
+
+If an older release command produced a generic archive containing
+`Products/Users/.../Objects`, retain the entire failed release directory by
+moving it aside, for example to `build/release/v1.8-failed-export`. After the
+archive fix is committed, pushed to `main`, and passes Validate, rerun
+`make release`. An unpublished version can remain `1.8`; preparation starts from
+the corrected commit. Do not edit the archived app, its metadata, or `state.json`.
 
 Rerun the same command from the same clean commit and version. Preparation verifies
 saved file hashes and resumes after completed work instead of repeating signing,
