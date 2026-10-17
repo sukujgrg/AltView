@@ -25,6 +25,8 @@ final class SRTMediaPlayback {
     private var format: AVAudioFormat?
     private var origin: Double?
     private var hostOrigin: Double = 0
+    private var lastVideoPTS: Double?
+    private var minimumVideoPTS: Double?
     private var audioStart: AVAudioFramePosition?
     private var audioFrames: AVAudioFramePosition = 0
     private var audioHostStart: Double = 0
@@ -34,6 +36,7 @@ final class SRTMediaPlayback {
     var audioDevice: UInt32?
     var frame: CMSampleBuffer?
     var onFrame: ((CMSampleBuffer?) -> Void)?
+    var onVideoTimelineReset: (() -> Void)?
     var onError: ((String) -> Void)?
     init(engine: AVAudioEngine = AVAudioEngine()) { self.engine = engine; engine.attach(player) }
     private func hostTime(for pts: Double) -> Double {
@@ -48,16 +51,32 @@ final class SRTMediaPlayback {
         case .video(let buffer):
             let pts = buffer.presentationTimeStamp.seconds
             guard pts.isFinite else { return }
+            // Audio recovery invalidates queued pictures from before its new
+            // origin. Allow one transport-clock tick of timestamp rounding.
+            if audioStart != nil, let minimumVideoPTS, pts + 1.0 / 90000 < minimumVideoPTS {
+                Self.logger.debug("video_drop reason=before_recovery_origin")
+                return
+            }
             let target = hostTime(for: pts)
-            // A stalled decoder must recover to the current picture, not replay
-            // an old queue. Discontinuities reset the common audio/video clock.
+            // Audio owns the running clock. A delayed/out-of-order video callback
+            // must not restart clean audio or clear the currently visible image.
             let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-            if target < now - 0.3 || target > now + 1 { reset(); _ = hostTime(for: pts) }
+            if target < now - 0.3 || target > now + 1 {
+                guard audioStart == nil else {
+                    Self.logger.debug("video_drop reason=outside_audio_timeline lead_s=\(target - now)")
+                    return
+                }
+                reanchor(at: pts, now: now)
+            } else if let lastVideoPTS, pts <= lastVideoPTS {
+                Self.logger.debug("video_drop reason=out_of_order")
+                return
+            }
             var timing = CMSampleTimingInfo(duration: buffer.duration,
                 presentationTimeStamp: CMTime(seconds: hostTime(for: pts), preferredTimescale: 90000), decodeTimeStamp: .invalid)
             var copy: CMSampleBuffer?
             guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: buffer,
                 sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &copy) == noErr, let copy else { return }
+            lastVideoPTS = pts
             frame = copy; onFrame?(copy)
         case .audio(let buffer, let when):
             guard when.isSampleTimeValid, when.sampleRate == buffer.format.sampleRate,
@@ -96,16 +115,14 @@ final class SRTMediaPlayback {
                 let reason = discontinuity ? "source_discontinuity" : remaining <= 0 ? "underrun" : "queue_limit"
                 Self.logger.notice("audio_rebuffer reason=\(reason, privacy: .public) queued_frames=\(remaining) timestamp_delta_frames=\(timestampDifference)")
                 stopAudio()
-                origin = pts; hostOrigin = now + playoutDelay
-                frame = nil; onFrame?(nil)
+                reanchor(at: pts, now: now)
             }
             if audioStart == nil {
                 var target = hostTime(for: pts)
                 // Engine/device startup can consume the original lead time.
                 // Move both audio and video together instead of clamping packets.
                 if target < now + 0.02 || target > now + maximumQueuedAudio {
-                    origin = pts; hostOrigin = now + playoutDelay; target = hostOrigin
-                    frame = nil; onFrame?(nil)
+                    reanchor(at: pts, now: now); target = hostOrigin
                 }
                 audioStart = when.sampleTime; audioHostStart = target
                 player.scheduleBuffer(buffer, at: nil)
@@ -130,8 +147,14 @@ final class SRTMediaPlayback {
     private func stopAudio() {
         player.stop(); audioStart = nil; audioFrames = 0; audioHostStart = 0
     }
+    private func reanchor(at pts: Double, now: Double) {
+        origin = pts; hostOrigin = now + playoutDelay; lastVideoPTS = nil; minimumVideoPTS = pts
+        // Discard frames queued on the old clock, but hold the displayed picture
+        // until its replacement arrives. Only an explicit reset removes it.
+        onVideoTimelineReset?()
+    }
     func reset() {
         stopAudio(); engine.stop(); format = nil
-        origin = nil; frame = nil; onFrame?(nil)
+        origin = nil; lastVideoPTS = nil; minimumVideoPTS = nil; frame = nil; onFrame?(nil)
     }
 }

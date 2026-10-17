@@ -92,6 +92,91 @@ final class SRTMediaTests: XCTestCase {
         try await checkPlaybackContinuity()
     }
 
+    func testClockRecoveryHoldsThePictureUntilReplacementAndStopClearsIt() async throws {
+        let fixture = try PlaybackFixture()
+        let playback = fixture.playback
+        defer { fixture.stop() }
+        var clears = 0
+        playback.onFrame = { if $0 == nil { clears += 1 } }
+        playback.consume(.video(try frame(at: 5)))
+        let original = try XCTUnwrap(playback.frame)
+        // The first audio packet can arrive after the video has already appeared.
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try fixture.offer(packet: 0)
+        XCTAssertTrue(playback.frame === original, "Audio startup must hold the visible picture while reanchoring")
+        XCTAssertEqual(clears, 0, "Clock recovery must not flash black")
+        try await Task.sleep(nanoseconds: 250_000_000)
+        try fixture.offer(packet: 1)
+        XCTAssertTrue(playback.frame === original, "An underrun must retain the last picture")
+        XCTAssertEqual(clears, 0)
+        playback.consume(.video(try frame(at: Double(240000 + 1024) / 48000)))
+        XCTAssertNotNil(playback.frame)
+        playback.reset()
+        XCTAssertNil(playback.frame)
+        XCTAssertEqual(clears, 1, "Stopping the receiver must still clear the picture")
+    }
+
+    func testCanvasTimelineFlushPreservesTheRenderedImageUntilExplicitClear() async throws {
+        guard #available(macOS 14.4, *) else { throw XCTSkip("Displayed pixel-buffer inspection requires macOS 14.4") }
+        _ = NSApplication.shared
+        let presentation = EucalyMediaPresentation(), picture = AVSampleBufferDisplayLayer()
+        let canvas = EucalyMediaCanvas(presentation: presentation, picture: picture)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 128, height: 72),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = canvas
+        window.orderFront(nil)
+        defer { presentation.playback.reset(); window.close() }
+        canvas.layoutSubtreeIfNeeded()
+        presentation.playback.consume(.video(try frame(at: 5)))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let timebase = try XCTUnwrap(picture.controlTimebase)
+        XCTAssertEqual(CMTimebaseSetRate(timebase, rate: 0), noErr)
+        XCTAssertNotNil(picture.sampleBufferRenderer.displayedPixelBuffer(), "The native renderer must have a visible picture")
+        XCTAssertEqual(CMTimebaseSetRate(timebase, rate: 1), noErr)
+        canvas.flushVideoTimeline()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        // Flush resets decoding readiness even while the last image remains.
+        // Inspect that image after recovery on the normal running clock.
+        XCTAssertEqual(CMTimebaseSetRate(timebase, rate: 0), noErr)
+        XCTAssertNotNil(picture.sampleBufferRenderer.displayedPixelBuffer(), "Discarding old deadlines must retain the rendered image")
+        // Render a replacement so Stop is checked from a ready, running state.
+        XCTAssertEqual(CMTimebaseSetRate(timebase, rate: 1), noErr)
+        presentation.playback.consume(.video(try frame(at: 5.25)))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(picture.isReadyForDisplay)
+        presentation.playback.reset()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(picture.isReadyForDisplay, "Stopping must still remove the image")
+    }
+
+    func testLateOrFutureVideoCannotRestartCleanAudioOrClearThePicture() throws {
+        let fixture = try PlaybackFixture()
+        let playback = fixture.playback
+        defer { fixture.stop() }
+        var clears = 0
+        playback.onFrame = { if $0 == nil { clears += 1 } }
+        for packet in 0..<3 { try fixture.offer(packet: packet) }
+        playback.consume(.video(try frame(at: 5.04)))
+        let current = try XCTUnwrap(playback.frame)
+        playback.consume(.video(try frame(at: 1)))
+        XCTAssertTrue(fixture.engine.isRunning, "A stale video callback must not stop the audio engine")
+        XCTAssertTrue(playback.frame === current)
+        playback.consume(.video(try frame(at: 20)))
+        XCTAssertTrue(fixture.engine.isRunning, "A future video timestamp must not restart clean audio")
+        XCTAssertTrue(playback.frame === current)
+        playback.consume(.video(try frame(at: 5.02)))
+        XCTAssertTrue(playback.frame === current, "Out-of-order frames must not replace newer pictures")
+        XCTAssertEqual(clears, 0)
+        try fixture.offer(packet: 6)
+        playback.consume(.video(try frame(at: 5.02)))
+        XCTAssertTrue(playback.frame === current, "Pictures queued before a clock reset must not reappear")
+        playback.consume(.video(try frame(at: Double(240000 + 6 * 1024) / 48000)))
+        XCTAssertFalse(playback.frame === current, "The next frame on the recovered clock must replace the held picture")
+        XCTAssertTrue(fixture.engine.isRunning)
+        XCTAssertEqual(clears, 0)
+    }
+
     func testPlaybackRendersContinuousPCMAfterLateStartupAndBatchedDelivery() async throws {
         try await checkPlaybackContinuity(startupDelay: 0.15, deliveryBatch: 3)
     }

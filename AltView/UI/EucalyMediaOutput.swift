@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import CoreAudio
 import Darwin
+import os
 
 @MainActor
 final class EucalyMediaPresentation {
@@ -9,6 +10,7 @@ final class EucalyMediaPresentation {
     private let canvases = NSHashTable<EucalyMediaCanvas>.weakObjects()
     init() {
         playback.onFrame = { [weak self] frame in self?.canvases.allObjects.forEach { $0.display(frame) } }
+        playback.onVideoTimelineReset = { [weak self] in self?.canvases.allObjects.forEach { $0.flushVideoTimeline() } }
     }
     func attach(_ canvas: EucalyMediaCanvas) { canvases.add(canvas); canvas.display(playback.frame) }
     func detach(_ canvas: EucalyMediaCanvas) { canvases.remove(canvas) }
@@ -16,10 +18,12 @@ final class EucalyMediaPresentation {
 
 @MainActor
 final class EucalyMediaCanvas: NSView {
+    private static let logger = Logger(subsystem: "com.suku.AltView", category: "media-video")
     let presentation: EucalyMediaPresentation
-    private let picture = AVSampleBufferDisplayLayer()
-    init(presentation: EucalyMediaPresentation) {
+    private let picture: AVSampleBufferDisplayLayer
+    init(presentation: EucalyMediaPresentation, picture displayLayer: AVSampleBufferDisplayLayer? = nil) {
         self.presentation = presentation
+        self.picture = displayLayer ?? AVSampleBufferDisplayLayer()
         super.init(frame: .zero)
         wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor
         picture.videoGravity = .resizeAspect; picture.backgroundColor = NSColor.black.cgColor
@@ -45,9 +49,14 @@ final class EucalyMediaCanvas: NSView {
     }
     func display(_ buffer: CMSampleBuffer?) {
         guard let buffer else { picture.flushAndRemoveImage(); return }
-        if picture.status == .failed { picture.flushAndRemoveImage() }
+        if picture.status == .failed {
+            let code = (picture.error as NSError?)?.code ?? 0
+            Self.logger.notice("video_renderer_recovery error_code=\(code)")
+            flushVideoTimeline()
+        }
         if picture.isReadyForMoreMediaData { picture.enqueue(buffer) }
     }
+    func flushVideoTimeline() { picture.flush() }
 }
 
 struct MediaAudioDevice: Equatable {

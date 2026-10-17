@@ -72,9 +72,14 @@ contiguously on the audio device's sample clock. MPEG-TS timestamp rounding must
 not create a separate gap or overlap at every AAC packet boundary. An underrun,
 source timestamp discontinuity or excessive queue restarts the shared audio/video
 origin; queued audio is bounded to 300 ms. This playout lead time is separate from
-the SRT recovery buffer. Playback recovery events appear in macOS unified logging
+the SRT recovery buffer. Recovery flushes old video deadlines while retaining the
+last displayed picture until a replacement arrives, preventing brief black flashes
+in both preview and the external display. Late, future and out-of-order video
+callbacks do not restart clean audio. Pictures queued before a recovered audio
+origin are discarded. Stop Receiving and disconnection still clear the picture.
+Playback recovery events appear in macOS unified logging
 under subsystem `com.suku.AltView`, category `media-playback`, without media content
-or credentials.
+or credentials. Native display-layer recovery uses category `media-video`.
 
 ## Recovery and limits
 
@@ -119,6 +124,9 @@ It checks presentation order and continued delivery, and reports decoded frame
 counts separately because cold encoder startup and machine load affect throughput.
 Scheduling tests verify that future video timestamps reach the host promptly and
 that short decoded bursts remain ordered and bounded.
+Picture-recovery regressions check delayed audio startup, underruns, stale video
+callbacks and explicit stop; a native display-layer test verifies that a timeline
+flush retains the rendered image.
 Physical capture permission, two-Mac loss/recovery, real HDMI audio routing and
 end-to-end latency require a hardware rehearsal.
 
