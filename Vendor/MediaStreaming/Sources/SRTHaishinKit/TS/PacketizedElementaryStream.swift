@@ -48,7 +48,25 @@ struct PESOptionalHeader {
     }
 
     init?(data: Data) {
+        guard data.count >= Self.fixedSectionSize,
+              Int(data[data.startIndex + 2]) <= data.count - Self.fixedSectionSize else {
+            return nil
+        }
         self.data = data
+        guard hasCompleteTimestamps else { return nil }
+    }
+
+    private var hasCompleteTimestamps: Bool {
+        switch ptsDtsIndicator {
+        case PESPTSDTSIndicator.none.rawValue:
+            return true
+        case PESPTSDTSIndicator.onlyPTS.rawValue:
+            return optionalFields.count >= TSTimestamp.dataSize
+        case PESPTSDTSIndicator.bothPresent.rawValue:
+            return optionalFields.count >= TSTimestamp.dataSize * 2
+        default:
+            return false
+        }
     }
 
     mutating func setTimestamp(_ timestamp: CMTime, presentationTimeStamp: CMTime, decodeTimeStamp: CMTime) {
@@ -75,6 +93,9 @@ struct PESOptionalHeader {
     }
 
     func makeSampleTimingInfo(_ previousPresentationTimeStamp: CMTime) -> CMSampleTimingInfo? {
+        // Header instances can also be constructed directly. Never index an
+        // incomplete PTS/DTS field, even when wire parsing was bypassed.
+        guard hasCompleteTimestamps else { return nil }
         var presentationTimeStamp: CMTime = .invalid
         var decodeTimeStamp: CMTime = .invalid
         if ptsDtsIndicator & 0x02 == 0x02 {
@@ -200,7 +221,7 @@ struct PacketizedElementaryStream: PESPacketHeader {
 
     init?(_ payload: Data) {
         self.payload = payload
-        if startCode != PacketizedElementaryStream.startCode {
+        if startCode != PacketizedElementaryStream.startCode || optionalPESHeader == nil {
             return nil
         }
     }
@@ -326,6 +347,9 @@ struct PacketizedElementaryStream: PESPacketHeader {
     }
 
     mutating func makeSampleBuffer(_ streamType: ESStreamType, previousPresentationTimeStamp: CMTime, formatDescription: CMFormatDescription?) -> CMSampleBuffer? {
+        guard var timing = optionalPESHeader?.makeSampleTimingInfo(previousPresentationTimeStamp) else {
+            return nil
+        }
         var blockBuffer: CMBlockBuffer?
         var sampleSizes: [Int] = []
         switch streamType {
@@ -345,7 +369,6 @@ struct PacketizedElementaryStream: PESPacketHeader {
             break
         }
         var sampleBuffer: CMSampleBuffer?
-        var timing = optionalPESHeader?.makeSampleTimingInfo(previousPresentationTimeStamp) ?? .invalid
         guard let blockBuffer, CMSampleBufferCreate(
                 allocator: kCFAllocatorDefault,
                 dataBuffer: blockBuffer,

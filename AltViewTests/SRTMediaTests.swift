@@ -521,6 +521,82 @@ final class SRTMediaTests: XCTestCase {
             previous = next
         }
     }
+    func testPESHeadersRejectTruncatedTimestampFields() throws {
+        for count in 0..<PESOptionalHeader.fixedSectionSize {
+            XCTAssertNil(PESOptionalHeader(data: Data(repeating: 0x80, count: count)))
+        }
+        let pts = TSTimestamp.encode(9000, 0x20)
+        let both = TSTimestamp.encode(10920, 0x30) + TSTimestamp.encode(9000, 0x10)
+        for (indicator, fields) in [(PESPTSDTSIndicator.onlyPTS, pts), (.bothPresent, both)] {
+            for count in 0..<fields.count {
+                let short = Data(fields.prefix(count))
+                XCTAssertNil(PESOptionalHeader(data: Data([0x80, indicator.rawValue << 6, UInt8(count)]) + short),
+                    "The declared header must contain every timestamp byte")
+                XCTAssertNil(PESOptionalHeader(data: Data([0x80, indicator.rawValue << 6, UInt8(fields.count)]) + short),
+                    "The supplied header must contain every declared byte")
+                var header = PESOptionalHeader()
+                header.ptsDtsIndicator = indicator.rawValue
+                header.optionalFields = short
+                XCTAssertNil(header.makeSampleTimingInfo(.invalid), "Directly constructed headers must also be safe")
+            }
+            let header = try XCTUnwrap(PESOptionalHeader(data: Data([0x80, indicator.rawValue << 6, UInt8(fields.count)]) + fields))
+            let timing = try XCTUnwrap(header.makeSampleTimingInfo(.invalid))
+            XCTAssertEqual(timing.presentationTimeStamp, CMTime(value: indicator == .onlyPTS ? 9000 : 10920, timescale: 90000))
+            if indicator == .bothPresent {
+                XCTAssertEqual(timing.decodeTimeStamp, CMTime(value: 9000, timescale: 90000))
+            } else {
+                XCTAssertFalse(timing.decodeTimeStamp.isValid)
+            }
+        }
+        XCTAssertNil(PESOptionalHeader(data: Data([0x80, 0x40, 5]) + pts), "DTS without PTS is forbidden")
+    }
+
+    func testTransportReaderDiscardsMalformedPESTimestampsAndContinues() async throws {
+        let reader = TSReader(), output = reader.output
+        let pat = TSProgramAssociation(), pmt = TSProgramMap()
+        pat.programs = [1: TSWriter.defaultPMTPID]
+        pmt.PCRPID = TSWriter.defaultAudioPID
+        var audio = ESSpecificData()
+        audio.streamType = .adtsAac; audio.elementaryPID = TSWriter.defaultAudioPID
+        pmt.elementaryStreamSpecificData = [audio]
+        for packet in pat.arrayOfPackets(TSWriter.defaultPATPID) + pmt.arrayOfPackets(TSWriter.defaultPMTPID) {
+            XCTAssertEqual(reader.read(packet.data), TSPacket.size)
+        }
+        let frame = adts(Data([0]))
+        func readPES(_ header: Data) {
+            let length = header.count + frame.count
+            let payload = Data([0, 0, 1, 192, UInt8(length >> 8), UInt8(length & 0xff)]) + header + frame
+            var packet = TSPacket()
+            packet.pid = TSWriter.defaultAudioPID; packet.payloadUnitStartIndicator = true
+            XCTAssertEqual(packet.fill(payload, useAdaptationField: true), payload.count)
+            XCTAssertEqual(reader.read(packet.data), TSPacket.size)
+        }
+        let pts = TSTimestamp.encode(9000, 0x20)
+        readPES(Data([0x80, 0x80, 5]) + pts)
+        // Includes the one-byte PTS header that originally crashed TSReader.
+        for (indicator, fields) in [(UInt8(0x80), pts), (0xc0, TSTimestamp.encode(9000, 0x30) + TSTimestamp.encode(7080, 0x10))] {
+            for count in 0..<fields.count {
+                readPES(Data([0x80, indicator, UInt8(count)]) + Data(fields.prefix(count)))
+            }
+        }
+        readPES(Data([0x80, 0x40, 5]) + pts)
+        readPES(Data([0x80, 0x80, 5]) + TSTimestamp.encode(10920, 0x20))
+        // Starting another PES flushes the preceding valid packet; clear then
+        // finishes the output stream so the test can inspect every emission.
+        readPES(Data([0x80, 0x80, 1, 0x21]))
+        reader.clear()
+        var samples: [CMSampleBuffer] = []
+        for await (pid, sample) in output {
+            XCTAssertEqual(pid, TSWriter.defaultAudioPID)
+            samples.append(sample)
+        }
+        XCTAssertEqual(samples.map(\.presentationTimeStamp), [CMTime(value: 9000, timescale: 90000), CMTime(value: 10920, timescale: 90000)])
+        for sample in samples {
+            XCTAssertEqual(sample.numSamples, 1)
+            XCTAssertEqual(sample.dataBuffer?.dataLength, frame.count)
+        }
+    }
+
     func testSettingsRejectMalformedAddressesAndSecretsAndNeverEncodePassphrase() throws {
         var settings = SRTMediaSettings(); settings.host = "192.168.1.20"
         XCTAssertTrue(settings.isValid)
