@@ -1,12 +1,65 @@
 # Current media validation
 
+## Receiver pairing and recovery buffers — 18 October 2026
+
+Update all three apps together. In eucaly’s output settings, pair a receiver while
+Lyrics and Media are disabled. Enable Media alone and verify Show Slides sends
+the selected local Audience picture/audio without a Lyrics lease. Enable Lyrics
+separately, assign distinct AltView displays, and stop either output independently.
+Pairing, discovery, opening Settings, changing assignments and receiver restoration
+must not start capture, transmission or output ownership. ViewTheWord pairs once
+for scripture and stays independent of Media.
+
+Restart each sender/receiver, rename the receiver, and change its IP/control port.
+The saved UUID must remain pinned while current endpoints resolve afresh. Stop
+Receiving must report Media unready. Disconnect Receiver or re-pairing requires a
+fresh Show/Retry; transient network recovery may resume a previously started stream.
+Reset Pairing must stop both paths and rotate both credentials; old codes/secrets
+must fail. Repair each sender with the new code. A different receiver with the
+same name must not inherit trust. On a signed export, verify Keychain restoration
+and visible failures without credentials in Bonjour/preferences/output JSON/logs.
+
+Set both SRT recovery menus to 20 ms on the wired installation. Measure loss,
+retransmits, late drops, sustained A/V drift and underruns; compare 40/80 ms. Keep
+the separate 80 ms playback lead: smaller tested leads underrun under injected
+batched delivery, and even 80 ms can underrun under competing host/device load.
+Measure physical HDMI/camera/ATEM delay and audio alignment separately. Automated
+loopback and device-clock results are recorded in media.md; they do not establish
+physical latency. Screen Recording consent, real HDMI routing and two-Mac loss
+still require this hardware rehearsal.
+
+
+## eucaly Lyrics naming and Media default — 18 October 2026
+
+Audience is now named **eucaly Lyrics** throughout the workspace, design controls,
+menus, display titles and accessibility labels. **eucaly Media** is first in the
+sidebar and opens on launch. Text receiving still starts automatically, while
+media reception waits for Start Receiving. Saved text display assignments, designs,
+pairing keys and preview aspect ratios keep their existing preference keys.
+Connections now pairs the receiver once for independent Lyrics and Media.
+See [receiver pairing](media.md#pairing-and-media-credentials) for the implemented
+control/credential lifecycle and the explicit upgrade from separate Media setup.
+
+Rehearsal: launch with existing preferences and confirm Media is selected with
+receiving stopped. Visit eucaly Lyrics, Design and Connections, check the new names,
+and verify text and media can still run and stop independently. Check compact
+light/dark windows and confirm monitor assignments and text preview shape persist.
+Earlier entries below use the historical names.
+
+Validation: all 175 non-window app regressions passed in the full run. Three window
+fixtures depended on the former opening page; after making their Lyrics navigation
+explicit, all 62 window tests passed on rerun. These cover Media as the default,
+restored preview shapes, template editing, text readiness, and independent display
+controls. Compact light/dark Lyrics and Media renders were inspected.
+
+
 Current builds require Apple Silicon. Intel-specific and Confidence entries below are historical. The current output is eucaly Media;
 its clock and same-Mac capture UI are removed. Follow [media setup](media.md) and
 rehearse live video with audio, static images, pause/seek, Stop, Ethernet loss,
-reconnect, wrong passphrase and HDMI device removal. Verify background music is
+reconnect, revoked pairing credentials and HDMI device removal. Verify background music is
 absent by default and only included when explicitly enabled in eucaly. Confirm
 Preview audio never reaches ATEM, in-house resolution stays unchanged, and
-Audience text remains independently usable. Measure end-to-end delay and audio
+eucaly Lyrics text remains independently usable. Measure end-to-end delay and audio
 sync with the production’s 50/60 Hz format.
 
 ## Login Keychain pairing recovery — 11 October 2026

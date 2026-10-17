@@ -7,6 +7,252 @@ import AppKit
 
 @MainActor
 final class SRTMediaTests: XCTestCase {
+    func testTransportKeepsExact60FPSClockTicksAtLargeHostTimes() throws {
+        let origin = CMTime(value: 1_234_567_890_123, timescale: 24_000_000)
+        for i in 0..<1800 {
+            var header = PESOptionalHeader()
+            let pts = CMTimeAdd(origin, CMTime(value: Int64(i), timescale: 60))
+            header.setTimestamp(origin, presentationTimeStamp: pts, decodeTimeStamp: .invalid)
+            let timing = try XCTUnwrap(header.makeSampleTimingInfo(.invalid))
+            XCTAssertEqual(timing.presentationTimeStamp, CMTime(value: 9000 + Int64(i) * 1500, timescale: 90000))
+        }
+    }
+
+    func testVideoPresentationDoesNotExpireUsingThePreviousFrameInterval() throws {
+        let playback = SRTMediaPlayback()
+        for pts in [10.0, 10.012, 10.034, 10.049] {
+            let source = try frame(at: pts)
+            playback.consume(.video(source))
+            let presented = try XCTUnwrap(playback.frame)
+            XCTAssertFalse(presented.duration.isValid, "A previous PTS gap cannot describe this frame's display duration")
+            XCTAssertTrue(presented.imageBuffer === source.imageBuffer)
+        }
+        playback.reset()
+    }
+
+    func testTransportKeepsOneOriginWhenAudioAndVideoStartAtDifferentTimes() async throws {
+        let encoder = TestVideoEncoder()
+        let compressed = await encoder.encode([try frame(at: 5.25)])
+        let encoded = expectation(description: "Encoded timestamp fixture")
+        var video: CMSampleBuffer?
+        let collect = Task {
+            for await packet in compressed { video = packet; encoded.fulfill(); break }
+        }
+        await fulfillment(of: [encoded], timeout: 5)
+        await encoder.stop(); collect.cancel()
+        let picture = try XCTUnwrap(video)
+        let audio = AVAudioCompressedBuffer(format: try aacFormat(), packetCapacity: 1, maximumPacketSize: 16)
+        audio.byteLength = 1; audio.packetCount = 1; audio.data.storeBytes(of: UInt8(0), as: UInt8.self)
+        let writer = TSWriter(), output = writer.output
+        writer.expectedMedias = [.audio, .video]
+        writer.setTimestampOrigin(CMTime(seconds: 5, preferredTimescale: 90000))
+        writer.audioFormat = audio.format; writer.videoFormat = picture.formatDescription
+        XCTAssertEqual(writer.pmt.PCRPID, TSWriter.defaultAudioPID, "The transport clock must continue while video is idle")
+        // The first audio callback is 250 ms later than the first video.
+        writer.append(picture)
+        writer.append(audio, when: AVAudioTime(sampleTime: 264000, atRate: 48000))
+        var timestamps: [UInt16: Double] = [:]
+        var audioCarriesClock = false
+        for await data in output {
+            for offset in stride(from: 0, to: data.count, by: TSPacket.size) {
+                let packet = try XCTUnwrap(TSPacket(data: data.subdata(in: offset..<offset + TSPacket.size)))
+                guard [TSWriter.defaultVideoPID, TSWriter.defaultAudioPID].contains(packet.pid),
+                      packet.payloadUnitStartIndicator else { continue }
+                let header = try XCTUnwrap(PESOptionalHeader(data: Data(packet.payload.dropFirst(6))))
+                timestamps[packet.pid] = try XCTUnwrap(header.makeSampleTimingInfo(.zero)).presentationTimeStamp.seconds
+                if packet.pid == TSWriter.defaultAudioPID { audioCarriesClock = packet.adaptationField?.pcrFlag == true }
+            }
+            if timestamps.count == 2 { break }
+        }
+        XCTAssertEqual(try XCTUnwrap(timestamps[TSWriter.defaultVideoPID]), 0.35, accuracy: 1.0 / 90000)
+        XCTAssertEqual(try XCTUnwrap(timestamps[TSWriter.defaultAudioPID]), 0.60, accuracy: 1.0 / 90000)
+        XCTAssertTrue(audioCarriesClock)
+        writer.clear()
+    }
+
+    func testLiveCanvasEnqueuesShortBurstsEvenWhenReadinessIsFalse() throws {
+        let picture = BackpressuredMediaDisplayLayer()
+        let canvas = EucalyMediaCanvas(presentation: EucalyMediaPresentation(), picture: picture)
+        let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        for i in 0..<8 { canvas.display(try frame(at: now + 0.08 + Double(i) / 60)) }
+        XCTAssertEqual(picture.received.count, 8, "Native readiness must not silently drop real-time decoded frames")
+        XCTAssertEqual(canvas.backpressuredEnqueueCount, 8)
+        XCTAssertEqual(canvas.overloadFlushCount, 0)
+        for (i, buffer) in picture.received.enumerated() {
+            XCTAssertEqual(buffer.presentationTimeStamp.seconds, now + 0.08 + Double(i) / 60, accuracy: 1.0 / 90000)
+        }
+    }
+
+    func testLiveCanvasBoundsAStalledQueueAndFlushesOldTimeline() throws {
+        let picture = BackpressuredMediaDisplayLayer()
+        let canvas = EucalyMediaCanvas(presentation: EucalyMediaPresentation(), picture: picture)
+        let timebase = try XCTUnwrap(picture.controlTimebase)
+        CMTimebaseSetRate(timebase, rate: 0)
+        let now = CMTimebaseGetTime(timebase).seconds
+        for i in 0..<25 { canvas.display(try frame(at: now + 0.08 + Double(i) / 60)) }
+        XCTAssertEqual(canvas.overloadFlushCount, 1)
+        XCTAssertEqual(picture.flushes, 1)
+        canvas.flushVideoTimeline()
+        for i in 0..<8 { canvas.display(try frame(at: now + 0.08 + Double(i) / 60)) }
+        XCTAssertEqual(canvas.overloadFlushCount, 1, "Clock recovery must discard the old queue accounting too")
+        canvas.display(nil)
+        XCTAssertEqual(picture.clears, 1)
+    }
+
+    func testRapidMediaRestartKeepsReplacementReadinessAndDecodeDrain() async throws {
+        let name = "MediaRestart.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(Int.random(in: 24000...49000), forKey: "mediaSRTport")
+        let controller = EucalyMediaViewController(defaults: defaults, secrets: TestMediaSecrets())
+        _ = controller.view
+        var offer: MediaOffer?
+        controller.onMediaOfferChange = { offer = $0 }
+        controller.configurePairing(key: Data("ABCD2345".utf8), receiverID: UUID())
+        defer { controller.shutdown() }
+        func waitFor(_ predicate: () -> Bool) async throws {
+            for _ in 0..<400 {
+                if predicate() { return }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            XCTFail("Media receiver did not reach the expected state")
+        }
+        try await waitFor { offer != nil }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let start = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? NSButton }.first { $0.title == "Start Receiving" })
+        let port = try XCTUnwrap(descendants(controller.view).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Media listening port" })
+        start.performClick(nil)
+        try await waitFor { offer?.ready == true }
+        for _ in 0..<3 {
+            controller.stopReceiving()
+            port.integerValue = Int.random(in: 24000...49000)
+            start.performClick(nil)
+            try await waitFor { offer?.ready == true }
+            let ready = try XCTUnwrap(offer)
+            let sender = SRTMediaSession(), ingest = SRTMediaIngest()
+            do {
+                var settings = SRTMediaSettings(); settings.host = "127.0.0.1"; settings.port = ready.port
+                try await sender.publish(settings: settings, passphrase: ready.passphrase, ingest: ingest)
+                let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
+                let origin = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+                for i in 0..<90 {
+                    ingest.offer(.video(try frame(at: origin + Double(i) / 60, patternSeed: UInt32(i + 1))))
+                    let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 800))
+                    pcm.frameLength = 800
+                    for channel in 0..<2 { pcm.floatChannelData![channel].update(repeating: 0, count: 800) }
+                    ingest.offer(.audio(pcm, AVAudioTime(sampleTime: Int64((origin * 48000).rounded()) + Int64(i * 800), atRate: 48000)))
+                    let remaining = origin + Double(i + 1) / 60 - CMClockGetTime(CMClockGetHostTimeClock()).seconds
+                    if remaining > 0 { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
+                }
+                try await waitFor { controller.presentation.playback.frame != nil }
+                XCTAssertTrue(offer?.ready == true, "A retired task must not clear the replacement listener readiness")
+            } catch { ingest.finish(); await sender.close(); throw error }
+            ingest.finish(); await sender.close()
+        }
+    }
+
+    func testReceiverPairingPersistsGeneratedMediaSecretAndRotatesWithoutStartingOutput() async throws {
+        let name = "MediaPairing.\(UUID())", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(Int.random(in: 24000...49000), forKey: "mediaSRTport")
+        defaults.set(20, forKey: "mediaSRTlatency")
+        let secrets = TestMediaSecrets(), id = UUID()
+        let controller = EucalyMediaViewController(defaults: defaults, secrets: secrets)
+        _ = controller.view
+        var offer: MediaOffer?
+        controller.onMediaOfferChange = { offer = $0 }
+        defer { controller.shutdown() }
+        func prepared(_ key: String) async throws -> MediaOffer {
+            offer = nil; controller.configurePairing(key: Data(key.utf8), receiverID: id)
+            for _ in 0..<200 {
+                if let offer { return offer }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            throw NSError(domain: "MediaPairing", code: 1)
+        }
+        let first = try await prepared("ABCD2345")
+        XCTAssertEqual(first.receiverID, id); XCTAssertEqual(first.passphrase.count, 32)
+        XCTAssertTrue(first.isValid); XCTAssertFalse(first.ready); XCTAssertFalse(controller.receiving)
+        XCTAssertFalse(controller.output.isActive)
+        let restored = try await prepared("ABCD2345")
+        XCTAssertEqual(restored.passphrase, first.passphrase)
+        let rotated = try await prepared("WXYZ6789")
+        XCTAssertNotEqual(rotated.passphrase, first.passphrase)
+        XCTAssertFalse(controller.receiving); XCTAssertFalse(rotated.ready)
+        func buttons(_ view: NSView) -> [NSButton] { view.subviews.flatMap { ($0 as? NSButton).map { [$0] } ?? buttons($0) } }
+        let start = try XCTUnwrap(buttons(controller.view).first { $0.title == "Start Receiving" })
+        start.performClick(nil)
+        for _ in 0..<200 {
+            if offer?.ready == true { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(offer?.ready == true, "Readiness is published after the real SRT listener binds")
+        XCTAssertFalse(controller.output.isActive, "Start Receiving cannot open a display")
+        controller.invalidatePairing()
+        XCTAssertNil(offer); XCTAssertFalse(controller.receiving)
+        XCTAssertEqual(start.title, "Start Receiving"); XCTAssertFalse(start.isEnabled)
+        XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(first.passphrase))
+    }
+
+    func testPlaybackLeadSweepMeasuresDelayedBatchesAndRecovery() async throws {
+        for lead in [0.02, 0.04, 0.06, 0.08] {
+            let fixture = try PlaybackFixture(playoutDelay: lead)
+            var underruns = 0
+            fixture.playback.onRebuffer = { if $0 == "underrun" { underruns += 1 } }
+            fixture.playback.consume(.video(try frame(at: 5)))
+            // Device/decoder startup can arrive after the original video origin.
+            try await Task.sleep(nanoseconds: 150_000_000)
+            let start = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+            for batch in 0..<24 {
+                let jitter = [0.0, 0.060, 0.010, 0.030][batch % 4]
+                let deadline = start + Double(batch * 3 * 1024) / 48000 + jitter
+                let wait = deadline - CMClockGetTime(CMClockGetHostTimeClock()).seconds
+                if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                for packet in (batch * 3)..<(batch * 3 + 3) { try fixture.offer(packet: packet, timestamp: Int64(240000 + packet * 1024 + packet % 2)) }
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+            let samples = fixture.captured.samples
+            let first = try XCTUnwrap(samples.firstIndex { abs($0) > 0.02 })
+            let last = try XCTUnwrap(samples.lastIndex { abs($0) > 0.02 })
+            var zeroRun = 0, longestZeroRun = 0
+            for value in samples[first...last] {
+                zeroRun = abs(value) < 0.000001 ? zeroRun + 1 : 0
+                longestZeroRun = max(longestZeroRun, zeroRun)
+            }
+            print("PLAYOUT_SWEEP lead_ms=\(Int(lead * 1000)) jitter_ms=60 batch=3 underruns=\(underruns) longest_silence_samples=\(longestZeroRun) rendered_samples=\(last - first)")
+            XCTAssertTrue(fixture.errors.isEmpty)
+            // This sweep is a diagnostic, not a wall-clock performance gate:
+            // competing audio engines/host load can exceed the injected jitter.
+            // Normal/batched waveform regressions above still require continuity.
+            XCTAssertGreaterThan(last - first, 40000, "Every candidate must continue rendering after recovery")
+            // A forced underrun must recover at every candidate without clearing video.
+            let held = fixture.playback.frame
+            try fixture.offer(packet: 72)
+            XCTAssertTrue(fixture.playback.frame === held)
+            XCTAssertGreaterThan(underruns, 0)
+            fixture.stop()
+        }
+    }
+
+    func testRecoveryBufferNegotiationHonorsTransportTypeBeforeOverrides() async throws {
+        for (receiverDelay, senderDelay) in [(20, 20), (40, 40), (80, 20), (20, 80)] {
+            var settings = SRTMediaSettings(); settings.host = "127.0.0.1"
+            settings.port = Int.random(in: 24000...49000); settings.latency = receiverDelay
+            let receiver = SRTConnection(), sender = SRTConnection()
+            let listener = Task { try await receiver.connect(settings.url(passphrase: "regression-media-123", listening: true)) }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            settings.latency = senderDelay
+            do {
+                try await sender.connect(settings.url(passphrase: "regression-media-123")); try await listener.value
+                let received = try await receiver.getSocketOption(.rcvlatency)
+                let advertised = try await sender.getSocketOption(.peerlatency)
+                XCTAssertEqual(received?.intValue, max(receiverDelay, senderDelay))
+                XCTAssertEqual(advertised?.intValue, max(receiverDelay, senderDelay))
+                print("SRT negotiated receiver=\(receiverDelay) sender=\(senderDelay) actual=\(received?.intValue ?? -1) ms")
+            } catch { await sender.close(); await receiver.close(); listener.cancel(); throw error }
+            await sender.close(); await receiver.close()
+        }
+    }
+
     func testAnnexBParserPreservesNALUnitsInLargeFrames() {
         // About 24 Mbps at 60 fps, including escaped start-code lookalikes.
         let payload = Data(repeating: 0x55, count: 49_984) + Data([0, 0, 3, 1, 0x55])
@@ -48,6 +294,8 @@ final class SRTMediaTests: XCTestCase {
         XCTAssertEqual(timestamps(output.ingest.drain()), [0, 1.0 / 60, 2.0 / 60])
         for i in 0..<30 { output.ingest.offer(.video(try frame(at: Double(i)))) }
         XCTAssertEqual(timestamps(output.ingest.drain()), (22..<30).map(Double.init))
+        XCTAssertEqual(output.ingest.videoStatistics.offered, 33)
+        XCTAssertEqual(output.ingest.videoStatistics.discarded, 22)
         output.ingest.finish(); output.ingest.offer(.video(try frame(at: 40)))
         XCTAssertTrue(output.ingest.drain().isEmpty)
     }
@@ -321,7 +569,7 @@ final class SRTMediaTests: XCTestCase {
 
     func testEncryptedSRTLoopbackCarriesH264AndAACAndCloses() async throws {
         var settings = SRTMediaSettings(); settings.host = "127.0.0.1"
-        settings.port = Int.random(in: 24000...49000); settings.latency = 40
+        settings.port = Int.random(in: 24000...49000); settings.latency = 20
         let secret = "loopback-media-123456"
         let receiver = SRTMediaSession(), sender = SRTMediaSession(), decoded = SRTMediaDecodedOutput(), ingest = SRTMediaIngest()
         let receive = Task { try await receiver.receive(settings: settings, passphrase: secret, output: decoded) }
@@ -332,6 +580,9 @@ final class SRTMediaTests: XCTestCase {
             throw error
         }
         try await receive.value
+        let connection = await receiver.connection
+        let actualLatency = try await connection.getSocketOption(.rcvlatency)
+        XCTAssertEqual(actualLatency?.intValue, 20)
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         let start = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         let frameCount = 180, samplesPerFrame = 800
@@ -608,6 +859,16 @@ final class SRTMediaTests: XCTestCase {
     }
 }
 
+private final class BackpressuredMediaDisplayLayer: AVSampleBufferDisplayLayer {
+    var received: [CMSampleBuffer] = []
+    var flushes = 0
+    var clears = 0
+    override var isReadyForMoreMediaData: Bool { false }
+    override func enqueue(_ sampleBuffer: CMSampleBuffer) { received.append(sampleBuffer) }
+    override func flush() { flushes += 1 }
+    override func flushAndRemoveImage() { clears += 1 }
+}
+
 private actor TestVideoEncoder {
     private let codec = VideoCodec()
     func encode(_ frames: [CMSampleBuffer]) -> AsyncStream<CMSampleBuffer> {
@@ -628,7 +889,7 @@ private final class PlaybackFixture {
     let playback: SRTMediaPlayback
     private let format: AVAudioFormat
     var errors: [String] = []
-    init() throws {
+    init(playoutDelay: Double = 0.08) throws {
         format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         let hardware = engine.outputNode.inputFormat(forBus: 0)
         guard hardware.sampleRate > 0, hardware.channelCount > 0 else { throw XCTSkip("No audio output device") }
@@ -640,7 +901,7 @@ private final class PlaybackFixture {
         silencer.outputVolume = 0
         let captured = captured
         mixer.installTap(onBus: 0, bufferSize: 512, format: hardware) { buffer, _ in captured.append(buffer) }
-        playback = SRTMediaPlayback(engine: engine)
+        playback = SRTMediaPlayback(engine: engine, playoutDelay: playoutDelay)
         playback.onError = { [weak self] in self?.errors.append($0) }
     }
     func offer(packet: Int, timestamp: Int64? = nil) throws {

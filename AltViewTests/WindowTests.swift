@@ -11,13 +11,48 @@ private final class LayoutTestWindow: NSWindow {
 }
 
 final class WindowTests: XCTestCase {
+    func testFailedPairingResetStaysStoppedAndCanBeRetried() throws {
+        let domain = "AltViewTests.ResetRetry.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
+        let original = try PairingKey.generate()
+        var writes = 0
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: original,
+            storePairing: { _, _ in
+                writes += 1
+                if writes == 1 { throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecInteractionNotAllowed)) }
+            }, advertiseReceiver: false)
+        defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        controller.showConnectionsPage()
+        let window = try XCTUnwrap(controller.window)
+        let reset = try button("Reset Pairing…", in: window.contentView!)
+        eventually("receiver starts") { controller.receiverStatus.listening && reset.isEnabled }
+        func confirmReset() throws {
+            reset.performClick(nil)
+            let sheet = try XCTUnwrap(window.attachedSheet?.contentView)
+            try button("Reset Pairing", in: sheet).performClick(nil)
+            eventually("reset sheet closes") { window.attachedSheet == nil }
+        }
+        try confirmReset()
+        eventually("failed reset can be retried") {
+            controller.pairingKey == nil && reset.isEnabled && !controller.receiverStatus.listening
+        }
+        XCTAssertFalse(try button("Resume Receiving", in: window.contentView!).isEnabled)
+        XCTAssertTrue(descendants(window.contentView!).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue.contains("Resolve the Keychain error")
+        })
+        try confirmReset()
+        eventually("retry saves a new code") { controller.pairingKey != nil }
+        XCTAssertNotEqual(controller.pairingKey, original)
+        XCTAssertTrue(try button("Resume Receiving", in: window.contentView!).isEnabled)
+    }
+
     // Window regressions use real loopback TLS without Bonjour advertising.
     // Live service discovery is covered separately by NetworkTests.
     func testReceiverRestoresSavedCodeWithoutRewritingIt() throws {
         let domain = "AltViewTests.ReceiverSavedPairing.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults,
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults,
             loadPairing: { account in
                 XCTAssertEqual(account, "receiver"); XCTAssertFalse(Thread.isMainThread)
                 return key
@@ -37,7 +72,7 @@ final class WindowTests: XCTestCase {
         for status in [errSecInteractionNotAllowed, errSecDecode] {
             let domain = "AltViewTests.ReceiverUnreadablePairing.\(UUID())"
             let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
-            let controller = ReceiverWindowController(defaults: defaults,
+            let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults,
                 loadPairing: { account in
                     XCTAssertEqual(account, "receiver"); XCTAssertFalse(Thread.isMainThread)
                     throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
@@ -61,7 +96,7 @@ final class WindowTests: XCTestCase {
         let domain = "AltViewTests.ReceiverUnsavedPairing.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         var attempted: Data?
-        let controller = ReceiverWindowController(defaults: defaults, loadPairing: { _ in nil },
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, loadPairing: { _ in nil },
             storePairing: { key, account in
                 XCTAssertFalse(Thread.isMainThread); XCTAssertEqual(account, "receiver")
                 attempted = key
@@ -83,7 +118,7 @@ final class WindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         let window = LayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
                                       styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0, window: window)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0, window: window)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         controller.showWindow(nil)
         let root = try XCTUnwrap(window.contentView)
@@ -93,16 +128,16 @@ final class WindowTests: XCTestCase {
                 window.appearance = NSAppearance(named: appearance)
                 for ratio in PreviewAspectRatio.allCases {
                     var frames: [(stage: NSRect, canvas: NSRect)] = []
-                    for role in ["Audience", "eucaly Media"] {
-                        if role == "Audience" { controller.showReceiverPage() } else { controller.showConfidencePage() }
+                    for role in ["eucaly Lyrics", "eucaly Media"] {
+                        if role == "eucaly Lyrics" { controller.showReceiverPage() } else { controller.showConfidencePage() }
                         let picker = try XCTUnwrap(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first)
                         picker.selectItem(withTitle: ratio.rawValue); picker.sendAction(picker.action, to: picker.target)
                         root.layoutSubtreeIfNeeded()
                         let stage = try XCTUnwrap(descendants(root).compactMap { $0 as? WorkspaceCanvasStage }.first)
                         let canvas = try XCTUnwrap(stage.subviews.first)
                         frames.append((stage.convert(stage.bounds, to: root), canvas.convert(canvas.bounds, to: root)))
-                        if role == "Audience" {
-                            for title in ["Edit Audience Design", "Clear & Release"] {
+                        if role == "eucaly Lyrics" {
+                            for title in ["Edit eucaly Lyrics Design", "Clear & Release"] {
                                 let control = try button(title, in: root)
                                 XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
                                 XCTAssertFalse(control.visibleRect.isEmpty)
@@ -139,12 +174,12 @@ final class WindowTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: domain) }
         let window = LayoutTestWindow(contentRect: NSRect(x: -8000, y: 0, width: 1160, height: 650),
                                       styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0, window: window)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0, window: window)
         defer { controller.shutdown(); controller.close() }
         controller.showReceiverPage(); controller.showWindow(nil)
         let root = try XCTUnwrap(window.contentView)
         let pickers = descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }
-        let audience = try XCTUnwrap(pickers.first { $0.accessibilityLabel() == "Audience preview aspect ratio" })
+        let audience = try XCTUnwrap(pickers.first { $0.accessibilityLabel() == "eucaly Lyrics preview aspect ratio" })
         XCTAssertEqual(audience.itemTitles, ["16:9", "16:10", "4:3"])
         let audienceCanvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
         for ratio in PreviewAspectRatio.allCases {
@@ -189,11 +224,11 @@ final class WindowTests: XCTestCase {
             XCTAssertEqual(stage.subviews.last?.frame, designCanvas.frame, "Layout guides must follow the resized monitor")
         }
         design.selectItem(withTitle: "16:10"); design.sendAction(design.action, to: design.target)
-        let back = try button("Back to Audience", in: root)
+        let back = try button("Back to eucaly Lyrics", in: root)
         XCTAssertNotNil(back.image); XCTAssertEqual(back.imagePosition, .imageLeading)
         back.performClick(nil)
-        XCTAssertEqual(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first?.accessibilityLabel(), "Audience preview aspect ratio")
-        let restored = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        XCTAssertEqual(descendants(root).compactMap { $0 as? PreviewAspectRatioPicker }.first?.accessibilityLabel(), "eucaly Lyrics preview aspect ratio")
+        let restored = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { restored.shutdown(); restored.close() }
         let restoredRoot = try XCTUnwrap(restored.window?.contentView)
         restored.showReceiverPage()
@@ -254,7 +289,7 @@ final class WindowTests: XCTestCase {
             fits += 1; return .make(content: content, style: style, template: template)
         }
         let scene = CanvasPresentation(layoutCache: cache)
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, presentation: scene)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, presentation: scene)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         eventually("receiver ready") { controller.receiverStatus.listening }
         XCTAssertEqual(fits, 0, "Draft controls can update without fitting offscreen previews")
@@ -286,7 +321,7 @@ final class WindowTests: XCTestCase {
         XCTAssertTrue(begun.isEmpty)
         controller?.show(displayID: nil)
         XCTAssertEqual(begun.count, 1)
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Audience" && $0.isVisible })
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview eucaly Lyrics" && $0.isVisible })
         scene.update(content: .scripture, style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
         scene.update(content: .empty, style: OutputStyle(), template: LowerThirdTemplate(), artwork: nil)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
@@ -309,7 +344,7 @@ final class WindowTests: XCTestCase {
                 let token = NSObject(); begun.append(token); return token
             }, endActivity: { ended.append(ObjectIdentifier($0)) })
             teardown.show(displayID: nil)
-            lastWindow = NSApp.windows.first { $0.title == "AltView — Preview Audience" && $0.isVisible }
+            lastWindow = NSApp.windows.first { $0.title == "AltView — Preview eucaly Lyrics" && $0.isVisible }
         }
         XCTAssertEqual(begun.count, 3)
         XCTAssertEqual(ended, begun.map { ObjectIdentifier($0) }, "Every activity ends exactly once, including teardown")
@@ -322,7 +357,7 @@ final class WindowTests: XCTestCase {
         let published = DisplayContent(title: "Published title", body: "Published text")
         defaults.set(true, forKey: "customTextEnabled")
         try defaults.set(JSONEncoder().encode(published), forKey: "customTextDraft")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         controller.showComposerPage()
         let root = try XCTUnwrap(controller.window?.contentView)
@@ -372,8 +407,8 @@ final class WindowTests: XCTestCase {
         secondDefaults.set("Automatic port two", forKey: "receiverName")
         let key = try PairingKey.generate()
         // Exercise the automatic receiving-port default, without a port override.
-        let first = ReceiverWindowController(defaults: firstDefaults, pairingKey: key, advertiseReceiver: false)
-        let second = ReceiverWindowController(defaults: secondDefaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false)
+        let first = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: firstDefaults, pairingKey: key, advertiseReceiver: false)
+        let second = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: secondDefaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false)
         defer {
             first.shutdown(); first.close(); second.shutdown(); second.close()
             firstDefaults.removePersistentDomain(forName: firstDomain); secondDefaults.removePersistentDomain(forName: secondDomain)
@@ -411,7 +446,7 @@ final class WindowTests: XCTestCase {
         let domain = "AltViewTests.PortRecovery.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: occupied.port)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: occupied.port)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         eventually("receiver is recovering") { controller.receiverStatus.starting && controller.receiverStatus.message.contains("retrying") }
         var connection: LocalReceiverConnection?
@@ -435,7 +470,7 @@ final class WindowTests: XCTestCase {
         defer { occupied.release() }
         let domain = "AltViewTests.PausePortRecovery.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: occupied.port)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: occupied.port)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         controller.showWindow(nil)
         eventually("receiver is recovering") { controller.receiverStatus.starting && controller.receiverStatus.message.contains("retrying") }
@@ -469,7 +504,7 @@ final class WindowTests: XCTestCase {
         var saved = LowerThirdTemplate(); saved.textTemplate = .lyrics
         try defaults.set(JSONEncoder().encode(saved), forKey: "lowerThirdTemplate")
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         var status = SenderStatus()
         let sender = SenderClient(name: "Policy observer") { status = $0 }
         defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
@@ -478,7 +513,7 @@ final class WindowTests: XCTestCase {
         eventually("saved override in handshake") { status.connected && status.templateCapabilities.policy == .fixed(.lyrics) }
         controller.showReceiverPage()
         let root = try XCTUnwrap(controller.window?.contentView)
-        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Audience template" })
+        let selection = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "eucaly Lyrics template" })
         selection.selectItem(withTitle: "Scripture"); selection.sendAction(selection.action, to: selection.target)
         XCTAssertEqual(status.templateCapabilities.policy, .fixed(.lyrics), "A design draft is private")
         try button("Apply Template", in: root).performClick(nil)
@@ -494,7 +529,7 @@ final class WindowTests: XCTestCase {
         let domain = "AltViewTests.AudienceDesignSeparation.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         var status = SenderStatus()
         let sender = SenderClient(name: "ViewTheWord") { status = $0 }
         defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
@@ -504,16 +539,17 @@ final class WindowTests: XCTestCase {
         let source = DisplayContent(title: "Reference", body: "Actual verse", footer: "Translation", template: .scripture)
         sender.submit(source); sender.takeOutput()
         eventually("source accepted") { controller.receiverStatus.content == source }
+        controller.showReceiverPage()
         let root = try XCTUnwrap(controller.window?.contentView)
         let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first {
-            $0.accessibilityLabel() == "Audience template"
+            $0.accessibilityLabel() == "eucaly Lyrics template"
         })
         controller.showDesignPage()
         let profiles = try editingTemplate(in: root)
         XCTAssertEqual(profiles.selectedSegment, DesignProfileID.allCases.firstIndex(of: .scripture))
         let editor = try XCTUnwrap(try button("Choose PNG…", in: root).target as? LowerThirdWindowController)
         XCTAssertTrue(descendants(editor.contentView).compactMap { $0 as? NSTextField }.contains {
-            $0.stringValue == "Audience uses Scripture · From ViewTheWord"
+            $0.stringValue == "eucaly Lyrics uses Scripture · From ViewTheWord"
         })
         selectTemplate(.lyrics, in: profiles)
         let font = try XCTUnwrap(descendants(editor.contentView).compactMap { $0 as? NSPopUpButton }.first {
@@ -552,7 +588,7 @@ final class WindowTests: XCTestCase {
         try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
         let key = try PairingKey.generate()
         let live = CanvasPresentation(reduceMotion: { true })
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0, presentation: live)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0, presentation: live)
         var status = SenderStatus()
         let sender = SenderClient(name: "Verse sender") { status = $0 }
         defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
@@ -566,7 +602,7 @@ final class WindowTests: XCTestCase {
         let root = try XCTUnwrap(controller.window?.contentView)
         let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
         let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first {
-            $0.accessibilityLabel() == "Audience template"
+            $0.accessibilityLabel() == "eucaly Lyrics template"
         })
         let heading = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTextField }.first {
             $0.accessibilityIdentifier() == "audiencePreviewHeading"
@@ -587,7 +623,7 @@ final class WindowTests: XCTestCase {
         assignment.selectItem(withTitle: "From sending app"); assignment.sendAction(assignment.action, to: assignment.target)
         XCTAssertTrue(canvas.presentation === live, "Returning to the applied choice restores the live preview and its animation clock")
         XCTAssertEqual(canvas.accessibilityLabel(), "Reference\nNext verse\nTranslation")
-        XCTAssertEqual(heading.stringValue, "THIS MAC · AUDIENCE PREVIEW")
+        XCTAssertEqual(heading.stringValue, "THIS MAC · EUCALY LYRICS PREVIEW")
         assignment.selectItem(withTitle: "Custom layout"); assignment.sendAction(assignment.action, to: assignment.target)
         XCTAssertEqual(canvas.style.fontName, "Georgia")
         XCTAssertEqual(live.style.fontName, "System")
@@ -611,11 +647,12 @@ final class WindowTests: XCTestCase {
         library.lyrics.template.enabled = true; library.lyrics.template.artwork = .custom
         library.lyrics.template.assetID = UUID(); library.lyrics.template.assetName = "missing.png"
         try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
+        controller.showReceiverPage()
         let root = try XCTUnwrap(controller.window?.contentView)
         let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first {
-            $0.accessibilityLabel() == "Audience template"
+            $0.accessibilityLabel() == "eucaly Lyrics template"
         })
         let apply = try button("Apply Template", in: root)
         let canvas = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
@@ -704,7 +741,7 @@ final class WindowTests: XCTestCase {
         let domain = "AltViewTests.Templates.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defaults.set(true, forKey: "customTextEnabled")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
         window.setContentSize(NSSize(width: 1160, height: 650))
@@ -733,9 +770,9 @@ final class WindowTests: XCTestCase {
         root.cacheDisplay(in: root.bounds, to: audienceBitmap)
         let audienceData = try XCTUnwrap(audienceBitmap.representation(using: .png, properties: [:]))
         let audienceAttachment = XCTAttachment(data: audienceData, uniformTypeIdentifier: "public.png")
-        audienceAttachment.name = "Audience-template-compact"; audienceAttachment.lifetime = .keepAlways
+        audienceAttachment.name = "eucaly Lyrics-template-compact"; audienceAttachment.lifetime = .keepAlways
         add(audienceAttachment)
-        let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Audience template" })
+        let assignment = try XCTUnwrap(descendants(root).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "eucaly Lyrics template" })
         assignment.selectItem(withTitle: "Lyrics"); assignment.sendAction(assignment.action, to: assignment.target)
         try button("Apply Template", in: root).performClick(nil)
         controller.showComposerPage()
@@ -814,7 +851,7 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(controller.readiness, .asleep)
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
         XCTAssertEqual(controller.readiness, .preview)
-        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview Audience" && $0.isVisible })
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "AltView — Preview eucaly Lyrics" && $0.isVisible })
         window.close()
         XCTAssertEqual(controller.readiness, .closed)
         controller.show(displayID: UInt32.max)
@@ -826,13 +863,14 @@ final class WindowTests: XCTestCase {
         let key = try PairingKey.generate()
         let domain = "AltViewTests.Feedback.\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         var status = SenderStatus()
         let sender = SenderClient(name: "Window feedback") { status = $0 }
         defer { sender.disconnect(); controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         eventually("receiver listening") { controller.receiverStatus.port != nil }
         sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(controller.receiverStatus.port))!), key: key)
         eventually("closed reported") { status.feedback.output == .closed }
+        controller.showReceiverPage()
         let root = try XCTUnwrap(controller.window?.contentView)
         try button("Open Display", in: root).performClick(nil)
         eventually("preview reported") { status.feedback.output == .preview }
@@ -910,7 +948,7 @@ final class WindowTests: XCTestCase {
         try defaults.set(JSONEncoder().encode(DisplayContent(body: "Body only")), forKey: "customTextDraft")
         var template = LowerThirdTemplate(); template.enabled = true
         try defaults.set(JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         controller.setCustomTextEnabled(true); controller.showComposerPage()
         let root = try XCTUnwrap(controller.window?.contentView)
@@ -936,7 +974,7 @@ final class WindowTests: XCTestCase {
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "workspaceContentStatus" })
         let changes = try XCTUnwrap(descendants(root).first { $0.accessibilityIdentifier() == "textDraftStatus" })
         XCTAssertTrue(changes.isHidden, "Publishing must clear the change indicator")
-        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("Audience window closed") })
+        XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("eucaly Lyrics window closed") })
         keepSpace.performClick(nil)
         XCTAssertFalse(changes.isHidden)
         try button("Hide Text", in: root).performClick(nil)
@@ -968,13 +1006,15 @@ final class WindowTests: XCTestCase {
         let domain = "AltViewTests.Receiver.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         root.layoutSubtreeIfNeeded()
         let navigation = try sidebar(in: root)
-        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "eucaly Media", "Setup", "Connections"])
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "eucaly Media", "eucaly Lyrics", "Setup", "Connections"])
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Media")
+        XCTAssertNotNil(descendants(root).first { $0 is EucalyMediaCanvas })
+        XCTAssertNotNil(try button("Start Receiving", in: root))
         eventually("ready without a click") { controller.receiverStatus.listening }
         XCTAssertNil(controller.receiverStatus.ownerName)
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
@@ -985,7 +1025,7 @@ final class WindowTests: XCTestCase {
         settings.layoutSubtreeIfNeeded()
         let code = try field("Pairing code", in: settings)
         XCTAssertEqual(code.stringValue, PairingKey.text(try XCTUnwrap(controller.pairingKey)))
-        let controls: [NSView] = [code, try button("Copy Code", in: settings), try button("Reset Code…", in: settings),
+        let controls: [NSView] = [code, try button("Copy Code", in: settings), try button("Reset Pairing…", in: settings),
                                   try button("Pause Receiving", in: settings)]
         for control in controls {
             XCTAssertTrue(settings.bounds.contains(control.convert(control.bounds, to: settings)))
@@ -1012,13 +1052,13 @@ final class WindowTests: XCTestCase {
         let draft = DisplayContent(body: "Saved private message")
         try defaults.set(JSONEncoder().encode(draft), forKey: "customTextDraft")
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         let navigation = try sidebar(in: root)
         eventually("receiver ready with Custom Text disabled") { controller.receiverStatus.listening }
         XCTAssertFalse(controller.customTextEnabled, "An existing saved draft must not opt the user in")
-        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "eucaly Media", "Setup", "Connections"])
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "eucaly Media", "eucaly Lyrics", "Setup", "Connections"])
         XCTAssertFalse(descendants(root).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
         XCTAssertTrue(descendants(root).compactMap { $0 as? NSTextField }.allSatisfy { $0.accessibilityLabel() != "Text title" })
 
@@ -1039,7 +1079,7 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(toggle.state, .off)
         XCTAssertFalse(controller.customTextEnabled, "Opening Settings alone must not enable Custom Text")
         toggle.state = .on; toggle.sendAction(toggle.action, to: toggle.target)
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience", "Design remains associated with Audience")
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Lyrics", "Design remains associated with eucaly Lyrics")
         visibleSettingsContent()?.window?.close()
         controller.showComposerPage()
         XCTAssertTrue(controller.customTextEnabled)
@@ -1059,13 +1099,13 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(sidebarTitles(navigation).filter { $0 == "Text" }.count, 1, "Reopening Text must not duplicate its page")
         controller.shutdown(); controller.close()
 
-        let reopened = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let reopened = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         defer { reopened.shutdown(); reopened.close() }
         let reopenedRoot = try XCTUnwrap(reopened.window?.contentView)
         let restoredNavigation = try sidebar(in: reopenedRoot)
         XCTAssertTrue(reopened.customTextEnabled)
         XCTAssertEqual(sidebarTitles(restoredNavigation).filter { $0 == "Text" }.count, 1)
-        XCTAssertEqual(selectedSidebarTitle(restoredNavigation), "Audience")
+        XCTAssertEqual(selectedSidebarTitle(restoredNavigation), "eucaly Media")
         eventually("reopened receiver ready") { reopened.receiverStatus.listening }
         XCTAssertEqual(reopened.receiverStatus.connections, 0)
         XCTAssertNil(reopened.receiverStatus.ownerID)
@@ -1078,7 +1118,7 @@ final class WindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0, window: layoutWindow())
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0, window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         controller.showWindow(nil)
         let root = try XCTUnwrap(controller.window?.contentView)
@@ -1108,7 +1148,7 @@ final class WindowTests: XCTestCase {
             for size in [NSSize(width: 1160, height: 650), NSSize(width: 1440, height: 900)] {
                 controller.window?.setContentSize(size)
                 root.layoutSubtreeIfNeeded()
-                for title in ["Copy Code", "Reset Code…", "Pause Receiving"] {
+                for title in ["Copy Code", "Reset Pairing…", "Pause Receiving"] {
                     let control = try button(title, in: connections)
                     XCTAssertTrue(root.bounds.contains(control.convert(control.bounds, to: root)))
                 }
@@ -1142,16 +1182,16 @@ final class WindowTests: XCTestCase {
         eventually("disconnecting the presenter clears its output") { controller.receiverStatus.connections == 1 && controller.receiverStatus.ownerID == nil && controller.receiverStatus.content == .empty }
         XCTAssertTrue(controller.receiverStatus.listening)
         controller.showReceiverPage()
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
-        try button("Edit Audience Design", in: root).performClick(nil)
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
-        XCTAssertNotNil(try button("Back to Audience", in: root))
-        try button("Back to Audience", in: root).performClick(nil)
-        XCTAssertNotNil(try button("Edit Audience Design", in: root))
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Lyrics")
+        try button("Edit eucaly Lyrics Design", in: root).performClick(nil)
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Lyrics")
+        XCTAssertNotNil(try button("Back to eucaly Lyrics", in: root))
+        try button("Back to eucaly Lyrics", in: root).performClick(nil)
+        XCTAssertNotNil(try button("Edit eucaly Lyrics Design", in: root))
         controller.showSettings()
         let settings = try XCTUnwrap(visibleSettingsContent())
         XCTAssertFalse(descendants(settings).contains { $0.accessibilityIdentifier() == "receiverPairingCode" })
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Lyrics")
         sender.disconnect(); second.disconnect()
         eventually("all senders disconnected") { controller.receiverStatus.connections == 0 }
     }
@@ -1161,7 +1201,7 @@ final class WindowTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: domain) }
         try defaults.set(JSONEncoder().encode(DisplayContent(body: "Currently published")), forKey: "customTextDraft")
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         controller.setCustomTextEnabled(true); controller.showComposerPage()
         let root = try XCTUnwrap(controller.window?.contentView)
@@ -1183,8 +1223,8 @@ final class WindowTests: XCTestCase {
         XCTAssertTrue(controller.receiverStatus.listening)
         XCTAssertEqual(controller.receiverStatus.content, .empty)
         let navigation = try sidebar(in: root)
-        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "Audience", "eucaly Media", "Setup", "Connections"])
-        XCTAssertEqual(selectedSidebarTitle(navigation), "Audience")
+        XCTAssertEqual(sidebarTitles(navigation), ["Outputs", "eucaly Media", "eucaly Lyrics", "Setup", "Connections"])
+        XCTAssertEqual(selectedSidebarTitle(navigation), "eucaly Lyrics")
         XCTAssertFalse(defaults.bool(forKey: "customTextEnabled"))
         controller.showComposerPage()
         XCTAssertFalse(controller.customTextEnabled, "A stale Text shortcut cannot enable the feature")
@@ -1202,7 +1242,7 @@ final class WindowTests: XCTestCase {
         controller.setCustomTextEnabled(false)
         controller.shutdown(); controller.close()
 
-        let reopened = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let reopened = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         defer { reopened.shutdown(); reopened.close() }
         XCTAssertFalse(reopened.customTextEnabled)
         let saved = try JSONDecoder().decode(DisplayContent.self, from: XCTUnwrap(defaults.data(forKey: "customTextDraft")))
@@ -1213,7 +1253,7 @@ final class WindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         try defaults.set(JSONEncoder().encode(DisplayContent.scripture), forKey: "customTextDraft")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0,
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0,
                                                   window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         let window = try XCTUnwrap(controller.window)
@@ -1264,7 +1304,7 @@ final class WindowTests: XCTestCase {
         var style = OutputStyle(); style.background = "0000FF"
         try defaults.set(JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
         try defaults.set(JSONEncoder().encode(style), forKey: "outputStyle")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0,
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0,
                                                   window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         controller.showDesignPage()
@@ -1308,7 +1348,7 @@ final class WindowTests: XCTestCase {
         receiver.start(name: "Layout test", key: key, advertise: false)
         defer { receiver.stop() }
         eventually("layout receiver ready") { remoteStatus.port != nil }
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0,
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0,
                                                   window: layoutWindow())
         defer { controller.shutdown(); controller.close() }
         controller.setCustomTextEnabled(true); controller.showComposerPage()
@@ -1688,7 +1728,7 @@ final class WindowTests: XCTestCase {
         XCTAssertEqual(selector.accessibilityLabel(), "Design")
         XCTAssertFalse(descendants(root).compactMap { $0 as? NSPopUpButton }.contains {
             $0.accessibilityLabel() == "Template" && !$0.isHiddenOrHasHiddenAncestor
-        }, "Audience assignment has no visible control in the design editor")
+        }, "eucaly Lyrics assignment has no visible control in the design editor")
         let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? OutputCanvas }.first)
         var publications = 0
         editor.onApplyLibrary = { _, _ in publications += 1 }
@@ -1882,7 +1922,7 @@ final class WindowTests: XCTestCase {
         let content = DisplayContent(title: "Heading", body: "Main message", footer: "Credit")
         defaults.set(true, forKey: "customTextEnabled")
         try defaults.set(JSONEncoder().encode(content), forKey: "customTextDraft")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         eventually("receiver ready") { controller.receiverStatus.listening }
         controller.showDesignPage()
@@ -1994,7 +2034,7 @@ final class WindowTests: XCTestCase {
         var template = LowerThirdTemplate(); template.enabled = true; template.artwork = .custom
         template.assetID = UUID(); template.assetName = "missing.png"
         try defaults.set(JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         eventually("receiver ready") { controller.receiverStatus.listening }
@@ -2088,7 +2128,7 @@ final class WindowTests: XCTestCase {
         try defaults.set(JSONEncoder().encode(original), forKey: "customTextDraft")
         var base = LowerThirdTemplate(); base.enabled = true
         try defaults.set(JSONEncoder().encode(base), forKey: "lowerThirdTemplate")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         eventually("receiver ready") { controller.receiverStatus.listening }
@@ -2146,7 +2186,7 @@ final class WindowTests: XCTestCase {
         let draft = DisplayContent(body: "Local private draft")
         try defaults.set(JSONEncoder().encode(draft), forKey: "customTextDraft")
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         eventually("receiver ready") { controller.receiverStatus.port != nil }
         var status = SenderStatus()
@@ -2193,7 +2233,7 @@ final class WindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
         try defaults.set(JSONEncoder().encode(DisplayContent(body: "Cancel this publication")), forKey: "customTextDraft")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false, receiverPort: 0)
         defer { controller.shutdown(); controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         controller.showDesignPage()
@@ -2301,7 +2341,7 @@ final class WindowTests: XCTestCase {
         let content = DisplayContent(body: "Healthy Custom publication")
         try defaults.set(JSONEncoder().encode(content), forKey: "customTextDraft")
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         let root = try XCTUnwrap(controller.window?.contentView)
         eventually("receiver ready") { controller.receiverStatus.listening }
@@ -2426,7 +2466,7 @@ final class WindowTests: XCTestCase {
         template.assetID = old.id; template.assetName = old.name
         try defaults.set(JSONEncoder().encode(template), forKey: "lowerThirdTemplate")
         let key = try PairingKey.generate()
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, artworkStore: store)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, artworkStore: store)
         defer { controller.shutdown(); controller.close() }
         controller.showDesignPage()
         let root = try XCTUnwrap(controller.window?.contentView)
@@ -2453,7 +2493,7 @@ final class WindowTests: XCTestCase {
         // Control its clock and Reduce Motion setting while checking the exiting scene.
         var now: TimeInterval = 10
         let presentation = CanvasPresentation(clock: { now }, reduceMotion: { false })
-        let restarted = ReceiverWindowController(defaults: defaults, pairingKey: key, advertiseReceiver: false, artworkStore: store,
+        let restarted = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: key, advertiseReceiver: false, artworkStore: store,
                                                  presentation: presentation)
         defer { restarted.shutdown(); restarted.close() }
         restarted.showDesignPage()
@@ -2504,7 +2544,7 @@ final class WindowTests: XCTestCase {
         library.lyrics.style.fontSize = 60; library.background = "00FF00"
         try defaults.set(JSONEncoder().encode(library), forKey: "templateDesignLibrary")
         try defaults.set(JSONEncoder().encode(DisplayContent(body: "You are the light\nthat guides me home\nYou are the hope\nthat makes me whole", template: .lyrics)), forKey: "customTextDraft")
-        let controller = ReceiverWindowController(defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false)
+        let controller = ReceiverWindowController(mediaSecrets: TestMediaSecrets(), defaults: defaults, pairingKey: try PairingKey.generate(), advertiseReceiver: false)
         defer { controller.shutdown(); controller.close(); defaults.removePersistentDomain(forName: domain) }
         controller.showDesignPage()
         let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)

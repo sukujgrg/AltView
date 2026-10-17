@@ -30,15 +30,20 @@ final class SRTMediaPlayback {
     private var audioStart: AVAudioFramePosition?
     private var audioFrames: AVAudioFramePosition = 0
     private var audioHostStart: Double = 0
-    private let playoutDelay = 0.08
+    // Real device-clock sweeps under delayed delivery do not support lowering
+    // the shipping 80 ms lead. SRT recovery is configured separately.
+    private let playoutDelay: Double
     private let maximumQueuedAudio = 0.3
+    var onRebuffer: ((String) -> Void)?
     var muted = false { didSet { player.volume = muted ? 0 : 1 } }
     var audioDevice: UInt32?
     var frame: CMSampleBuffer?
     var onFrame: ((CMSampleBuffer?) -> Void)?
     var onVideoTimelineReset: (() -> Void)?
     var onError: ((String) -> Void)?
-    init(engine: AVAudioEngine = AVAudioEngine()) { self.engine = engine; engine.attach(player) }
+    init(engine: AVAudioEngine = AVAudioEngine(), playoutDelay: Double = 0.08) {
+        self.engine = engine; self.playoutDelay = playoutDelay; engine.attach(player)
+    }
     private func hostTime(for pts: Double) -> Double {
         if origin == nil {
             origin = pts
@@ -71,7 +76,10 @@ final class SRTMediaPlayback {
                 Self.logger.debug("video_drop reason=out_of_order")
                 return
             }
-            var timing = CMSampleTimingInfo(duration: buffer.duration,
+            // MPEG-TS infers duration from the *previous* PTS interval. With
+            // variable capture timing that is not this picture's display span;
+            // let the next PTS replace it instead of expiring it too early.
+            var timing = CMSampleTimingInfo(duration: .invalid,
                 presentationTimeStamp: CMTime(seconds: hostTime(for: pts), preferredTimescale: 90000), decodeTimeStamp: .invalid)
             var copy: CMSampleBuffer?
             guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: buffer,
@@ -114,6 +122,7 @@ final class SRTMediaPlayback {
                 remaining + Double(buffer.frameLength) > maximumQueuedAudio * when.sampleRate) {
                 let reason = discontinuity ? "source_discontinuity" : remaining <= 0 ? "underrun" : "queue_limit"
                 Self.logger.notice("audio_rebuffer reason=\(reason, privacy: .public) queued_frames=\(remaining) timestamp_delta_frames=\(timestampDifference)")
+                onRebuffer?(reason)
                 stopAudio()
                 reanchor(at: pts, now: now)
             }

@@ -4,6 +4,35 @@ import Darwin
 @testable import AltView
 
 final class NetworkTests: XCTestCase {
+    func testOnlyNegotiatedAuthenticatedMediaPeersReceiveTheCredentialWithoutTakingText() throws {
+        let key = try PairingKey.generate(), id = UUID()
+        var status = ReceiverStatus(), observerMessages: [WireMessage] = [], mediaMessages: [WireMessage] = []
+        let server = ReceiverServer(receiverID: id) { status = $0 }
+        let secret = "0123456789abcdef0123456789abcdef"
+        server.updateMediaOffer(.init(receiverID: id, port: 12000, ready: false, passphrase: secret))
+        server.start(name: "Receiver setup", key: key, advertise: false)
+        eventually("listener bound") { status.listening }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: try XCTUnwrap(status.port))!)
+        let observer = PeerChannel(connection: NWConnection(to: endpoint, using: SecureConnection.parameters(key: key)), queue: .main)
+        let media = PeerChannel(connection: NWConnection(to: endpoint, using: SecureConnection.parameters(key: key)), queue: .main)
+        observer.onReady = { [weak observer] in observer?.send(.init(kind: .hello, senderID: UUID(), name: "Scripture", capabilities: [])) }
+        media.onReady = { [weak media] in media?.send(.init(kind: .hello, senderID: UUID(), name: "eucaly", capabilities: [AltViewProtocol.mediaProvisioning])) }
+        observer.onMessage = { observerMessages.append($0) }
+        media.onMessage = { mediaMessages.append($0) }
+        defer { observer.close(nil); media.close(nil); server.stop() }
+        observer.start(); media.start()
+        eventually("both welcomed") { observerMessages.contains { $0.kind == .welcome } && mediaMessages.contains { $0.kind == .welcome } }
+        XCTAssertTrue(observerMessages.allSatisfy { $0.media == nil }, "Text-only senders must not receive the Media secret")
+        let offer = try XCTUnwrap(mediaMessages.first { $0.kind == .welcome }?.media)
+        XCTAssertEqual(offer.receiverID, id); XCTAssertEqual(offer.passphrase, secret)
+        XCTAssertEqual(offer.host, "127.0.0.1"); XCTAssertFalse(offer.ready)
+        XCTAssertNil(status.ownerID); XCTAssertEqual(status.content, .empty)
+        server.updateMediaOffer(.init(receiverID: id, port: 13000, ready: true, passphrase: secret))
+        eventually("ready endpoint feedback") { mediaMessages.contains { $0.media?.ready == true && $0.media?.port == 13000 } }
+        XCTAssertTrue(observerMessages.allSatisfy { $0.media == nil })
+        XCTAssertNil(status.ownerID)
+    }
+
     private final class ListenerProbe {
         private let lock = NSLock()
         private var listeners: [NWListener] = []
@@ -71,7 +100,7 @@ final class NetworkTests: XCTestCase {
         XCTAssertEqual(output.confidenceContent.body, "legacy sentinel") // ordinary legacy text fallback only
         XCTAssertNil(output.confidenceContent.secondary)
         XCTAssertFalse(output.content.visible)
-        XCTAssertTrue(AltViewProtocol.capabilities.isEmpty)
+        XCTAssertEqual(AltViewProtocol.capabilities, [AltViewProtocol.mediaProvisioning])
     }
     func testWaitingReceiverPreservesListenerAndOwnershipUntilNetworkResumes() throws {
         let key = try PairingKey.generate(), probe = ListenerProbe()
